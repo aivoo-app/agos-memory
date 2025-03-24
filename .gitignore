@@ -1,0 +1,19 @@
+# Build artifacts
+/target
+
+# Generated config (created by `agos-memory init`)
+agos-memory.toml
+
+# Local planning notes — never shared
+AGENT.md
+
+# Local agent rules — never shared
+.clinerules
+.agostmp/
+
+# Runtime artifacts
+*.db
+*.db-wal
+*.db-shm
+*.lock
+.fastembed_cache/
