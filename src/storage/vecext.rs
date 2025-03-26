@@ -38,7 +38,9 @@ pub fn register() -> Result<()> {
                 pz_err_msg: *mut *mut std::os::raw::c_char,
                 p_api: *const rusqlite::ffi::sqlite3_api_routines,
             ) -> std::os::raw::c_int;
-            let init: Option<InitFunc> = Some(std::mem::transmute(sqlite3_vec_init as *const ()));
+            let init: Option<InitFunc> = Some(std::mem::transmute::<*const (), InitFunc>(
+                sqlite3_vec_init as *const (),
+            ));
             sqlite3_auto_extension(init);
         }
         Ok(())

@@ -118,7 +118,7 @@ pub fn hash_to_unit_vector(text: &str, dim: usize) -> Vec<f32> {
             .try_into()
             .expect("8 bytes"),
     );
-    for (_i, slot) in buckets.iter_mut().enumerate() {
+    for slot in buckets.iter_mut() {
         state ^= state << 13;
         state ^= state >> 7;
         state ^= state << 17;

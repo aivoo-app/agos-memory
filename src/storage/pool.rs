@@ -9,6 +9,7 @@
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
 
@@ -90,23 +91,42 @@ impl ReadPool {
 
     /// Check out a read connection, blocking until one is available.
     pub fn get(&self) -> PooledConn {
-        // Handle poisoned mutexes gracefully: a previous panic should not
-        // permanently break the pool.
+        self.get_timeout(None)
+            .expect("get with no timeout should never fail")
+    }
+
+    /// Check out a read connection with an optional timeout.
+    ///
+    /// Returns `None` if the timeout expires before a connection is available.
+    pub fn get_timeout(&self, timeout: Option<Duration>) -> Option<PooledConn> {
         let mut slots = self.inner.slots.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if let Some(slot) = slots.iter().position(|s| s.is_some()) {
                 let conn = slots[slot].take().expect("checked above");
-                return PooledConn {
+                return Some(PooledConn {
                     inner: self.inner.clone(),
                     slot,
                     conn: Some(conn),
-                };
+                });
             }
-            slots = self
-                .inner
-                .not_empty
-                .wait(slots)
-                .unwrap_or_else(|e| e.into_inner());
+
+            // Wait for a connection to become available.
+            slots = if let Some(dur) = timeout {
+                match self.inner.not_empty.wait_timeout(slots, dur) {
+                    Ok((s, _timeout_result)) => s,
+                    Err(e) => e.into_inner().0,
+                }
+            } else {
+                self.inner
+                    .not_empty
+                    .wait(slots)
+                    .unwrap_or_else(|e| e.into_inner())
+            };
+
+            // If we timed out and still no connections available, return None.
+            if timeout.is_some() && slots.iter().all(|s| s.is_none()) {
+                return None;
+            }
         }
     }
 
