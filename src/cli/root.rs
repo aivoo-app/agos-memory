@@ -103,6 +103,11 @@ fn doctor(cfg: &Config) -> Result<()> {
         )));
     }
 
+    // Register sqlite-vec BEFORE opening the connection so the extension
+    // is available on this connection (sqlite3_auto_extension only affects
+    // future connections).
+    vecext::register()?;
+
     let conn = Connection::open(&cfg.db_path)?;
     schema::apply_pragmas(&conn)?;
 
@@ -120,7 +125,6 @@ fn doctor(cfg: &Config) -> Result<()> {
         });
     }
 
-    vecext::register()?;
     match vecext::verify(&conn) {
         Ok(version) => println!("  [ OK ] sqlite-vec {version}"),
         Err(e) => {
