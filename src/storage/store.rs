@@ -403,69 +403,103 @@ impl StoreHandle {
 
 /// Advisory single-process lock: one writer per database file (D11).
 ///
-/// Sidecar `<db>.lock` created with `O_EXCL`; contains a random token to avoid
-/// PID information leakage. A lock held by a dead process is reclaimed by
-/// attempting to overwrite with a new token. Defense-in-depth — SQLite's own
-/// file locking remains the final arbiter; this exists to produce a *clear
-/// error* instead of `SQLITE_BUSY`.
+/// A `<db>.lock` sidecar is held with an exclusive non-blocking `flock` for
+/// the lifetime of the [`Store`]. The kernel releases the flock when the
+/// holder dies, so a lock left behind by a SIGKILLed process is reclaimed
+/// automatically on the next open (previously a dead holder bricked the
+/// database until the file was deleted by hand). The sidecar also records the
+/// holding pid so a refused opener can name the offender. Defense-in-depth —
+/// SQLite's own file locking remains the final arbiter; this exists to produce
+/// a *clear error* instead of `SQLITE_BUSY`.
 struct ProcessLock {
+    /// The locked sidecar file; dropping it releases the flock.
+    #[allow(dead_code)]
+    file: std::fs::File,
+    /// Sidecar path, kept for diagnostics and tests.
+    #[allow(dead_code)]
     path: PathBuf,
-    token: String,
+    /// Pid recorded in the sidecar by this holder.
+    #[allow(dead_code)]
+    pid: u32,
 }
 
 impl ProcessLock {
     fn acquire(db_path: &Path) -> Result<Self> {
-        let lock_path = db_path.with_extension("lock");
-        let token = generate_lock_token();
+        // Append, don't replace the extension: "memory.db" -> "memory.db.lock".
+        let lock_path = PathBuf::from(format!("{}.lock", db_path.display()));
 
-        // Try to create the lock file with our token.
+        #[cfg(unix)]
+        return Self::acquire_flock(db_path, &lock_path);
+
+        #[cfg(not(unix))]
+        return Self::acquire_o_excl(db_path, &lock_path);
+    }
+
+    /// flock-based acquisition (unix). The kernel drops the lock when the
+    /// holder dies, so stale locks self-heal on the next open.
+    #[cfg(unix)]
+    fn acquire_flock(db_path: &Path, lock_path: &Path) -> Result<Self> {
+        let file = open_lock_file(lock_path)?;
+        match try_flock_exclusive(&file) {
+            Ok(()) => {
+                // We own the database. Record our pid so a refused opener can
+                // name the holder in its error message.
+                let pid = std::process::id();
+                let mut file = file;
+                {
+                    use std::io::Write;
+                    let _ = file.set_len(0);
+                    let _ = writeln!(file, "pid {pid}");
+                }
+                tracing::debug!(lock = %lock_path.display(), "database lock acquired");
+                Ok(Self {
+                    file,
+                    path: lock_path.to_path_buf(),
+                    pid,
+                })
+            }
+            Err(e) if is_would_block(&e) => Err(Error::DbLocked {
+                path: db_path.display().to_string(),
+                pid: read_holder_pid(lock_path),
+            }),
+            Err(e) => Err(Error::Storage(format!(
+                "cannot lock {}: {e}",
+                lock_path.display()
+            ))),
+        }
+    }
+
+    /// O_EXCL fallback for platforms without `flock` here. Weaker: a crashed
+    /// holder leaves the sidecar behind and it must be removed by hand
+    /// (documented in the runbook). Real targets are Linux; kept for
+    /// portability only.
+    #[cfg(not(unix))]
+    fn acquire_o_excl(db_path: &Path, lock_path: &Path) -> Result<Self> {
+        use std::io::Write;
+        let token = format!(
+            "{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64 ^ u64::from(std::process::id()))
+                .unwrap_or(0)
+        );
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&lock_path)
+            .open(lock_path)
         {
             Ok(mut f) => {
-                use std::io::Write;
                 let _ = writeln!(f, "{token}");
                 Ok(Self {
-                    path: lock_path,
-                    token,
+                    file: f,
+                    path: lock_path.to_path_buf(),
+                    pid: std::process::id(),
                 })
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                // Lock file exists. Read the token and check if the holder is alive.
-                let existing = std::fs::read_to_string(&lock_path)
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_default();
-
-                if is_holder_alive(&existing) {
-                    Err(Error::DbLocked {
-                        path: db_path.display().to_string(),
-                        pid: 0, // Token-based, no PID exposed
-                    })
-                } else {
-                    // Stale lock - attempt to atomically replace it.
-                    tracing::warn!("reclaiming stale database lock");
-                    match std::fs::OpenOptions::new()
-                        .write(true)
-                        .truncate(true)
-                        .open(&lock_path)
-                    {
-                        Ok(mut f) => {
-                            use std::io::Write;
-                            let _ = writeln!(f, "{token}");
-                            Ok(Self {
-                                path: lock_path,
-                                token,
-                            })
-                        }
-                        Err(_) => {
-                            // Race: another process claimed it. Retry.
-                            Self::acquire(db_path)
-                        }
-                    }
-                }
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(Error::DbLocked {
+                path: db_path.display().to_string(),
+                pid: read_holder_pid(lock_path),
+            }),
             Err(e) => Err(Error::Storage(format!(
                 "cannot create lock file {}: {e}",
                 lock_path.display()
@@ -474,57 +508,52 @@ impl ProcessLock {
     }
 }
 
-/// Generate a random token for the lock file.
-fn generate_lock_token() -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let mut hasher = DefaultHasher::new();
-    std::process::id().hash(&mut hasher);
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .hash(&mut hasher);
-    std::thread::current().id().hash(&mut hasher);
-    format!("{:x}", hasher.finish())
+/// Open (creating if needed) the sidecar lock file without truncating it.
+fn open_lock_file(lock_path: &Path) -> Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)
+        .map_err(|e| {
+            Error::Storage(format!(
+                "cannot open lock file {}: {e}",
+                lock_path.display()
+            ))
+        })
 }
 
-/// Check if the lock holder is still alive by attempting to verify the process.
-/// For token-based locks, we use a heuristic: if the lock file is older than
-/// a threshold and the process isn't obviously alive, consider it stale.
-fn is_holder_alive(token: &str) -> bool {
-    if token.is_empty() {
-        return false;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        // On Linux, we can't easily check a token, so we fall back to a
-        // time-based heuristic: if the lock file was modified recently,
-        // assume the holder is alive.
-        // This is a conservative approach - better to err on the side of
-        // thinking it's alive than to corrupt the database.
-        true
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        true // Conservative: assume alive on unknown platforms
+/// Take an exclusive, non-blocking `flock` on an open sidecar file.
+#[cfg(unix)]
+fn try_flock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: flock(2) on a valid, open file descriptor; no memory involved.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 
-impl Drop for ProcessLock {
-    fn drop(&mut self) {
-        // Only remove the lock file if it still contains our token.
-        // This prevents removing a lock that was claimed by another process.
-        if let Ok(existing) = std::fs::read_to_string(&self.path)
-            && existing.trim() == self.token
-        {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
+#[cfg(unix)]
+fn is_would_block(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::WouldBlock || e.raw_os_error() == Some(libc::EAGAIN)
+}
+
+/// Best-effort read of the holder pid recorded in the sidecar (`pid <n>`).
+/// Returns 0 when the file is missing, empty, or from the legacy token format.
+fn read_holder_pid(lock_path: &Path) -> u32 {
+    std::fs::read_to_string(lock_path)
+        .ok()
+        .and_then(|s| {
+            s.lines().find_map(|l| {
+                l.strip_prefix("pid ")
+                    .and_then(|rest| rest.trim().parse::<u32>().ok())
+            })
+        })
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -622,5 +651,57 @@ mod tests {
             .map(|(_, n)| *n)
             .sum();
         assert_eq!(total, 16);
+    }
+
+    #[tokio::test]
+    async fn duplicate_open_reports_holding_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pid.db");
+        let first = StoreHandle::open(&test_config(&path), 1).await.unwrap();
+
+        // The sidecar records the holder pid for error reporting.
+        let lock_path = dir.path().join("pid.db.lock");
+        let content = std::fs::read_to_string(&lock_path).unwrap();
+        let recorded: u32 = content
+            .lines()
+            .find_map(|l| l.strip_prefix("pid ").and_then(|r| r.trim().parse().ok()))
+            .expect("lock file records the holder pid");
+        assert_eq!(recorded, std::process::id());
+
+        let err = StoreHandle::open(&test_config(&path), 1).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("one process per database"), "got: {msg}");
+        assert!(
+            msg.contains(&format!("pid {recorded}")),
+            "must name the real holding pid, got: {msg}"
+        );
+        drop(first);
+    }
+
+    #[tokio::test]
+    async fn stale_lock_from_dead_holder_is_reclaimed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stale.db");
+
+        // Simulate a SIGKILLed holder: a sidecar exists but nobody holds the
+        // flock. The old implementation refused every later open forever.
+        std::fs::write(dir.path().join("stale.db.lock"), "pid 999999999\n").unwrap();
+
+        let store = StoreHandle::open(&test_config(&path), 1).await.unwrap();
+        assert!(store.memory_counts().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dropping_the_store_releases_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relock.db");
+
+        {
+            let _first = StoreHandle::open(&test_config(&path), 1).await.unwrap();
+            // Drop releases the flock; the sidecar file may remain.
+        }
+
+        // Reopen in the same process must succeed after clean shutdown.
+        let _again = StoreHandle::open(&test_config(&path), 1).await.unwrap();
     }
 }
