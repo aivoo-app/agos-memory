@@ -10,13 +10,14 @@
 #   make test          # cargo test --all-targets
 #   make build         # release build
 #   make gate-v0.1.0   # milestone gate: check + plan-guard
+#   make gate-v0.1.1   # v0.1.1 milestone gate: fmt check + clippy + tests + plan-guard
 #   make plan-guard    # fail if plan/ or .clinerules are tracked by git
 #   make ci            # plan-guard + check (what CI runs)
 # ==============================================================================
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-.PHONY: help check fmt lint test build gate-v0.1.0 plan-guard ci
+.PHONY: help check fmt lint test build gate-v0.1.0 gate-v0.1.1 plan-guard ci
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -40,6 +41,12 @@ plan-guard: ## Fail if plan/ or local-only files are tracked by git
 	bash scripts/ci/check-plan-not-tracked.sh
 
 gate-v0.1.0: ## v0.1.0 milestone gate
+	cargo fmt --all -- --check
+	cargo clippy --all-targets -- -D warnings
+	cargo test --all-targets
+	bash scripts/ci/check-plan-not-tracked.sh
+
+gate-v0.1.1: ## v0.1.1 milestone gate (same gates, named for the release)
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
