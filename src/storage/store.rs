@@ -48,6 +48,48 @@ pub struct NewMemory {
     pub source_kind: String,
 }
 
+/// Result of a verified snapshot ([`StoreHandle::snapshot_to`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SnapshotReport {
+    /// Snapshot file path.
+    pub path: PathBuf,
+    /// Snapshot size in bytes.
+    pub bytes: u64,
+    /// `PRAGMA integrity_check` result of the snapshot (must be `"ok"`).
+    pub integrity: String,
+    /// Row counts per core table in the snapshot (verification detail).
+    pub tables: Vec<(String, i64)>,
+}
+
+/// Row counts of the core tables, used to verify a snapshot against the live
+/// database. Table names are a fixed list — no injection surface.
+fn table_counts(conn: &Connection) -> Result<Vec<(String, i64)>> {
+    let mut out = Vec::new();
+    for t in [
+        "agents",
+        "meta",
+        "sessions",
+        "turns",
+        "memories",
+        "memory_versions",
+        "memory_links",
+        "embeddings_cache",
+        "jobs",
+        "jobs_dead",
+        "llm_calls",
+        "token_ledger",
+        "recalls",
+        "recall_items",
+        "pins",
+        "forget_audit",
+        "tombstones",
+    ] {
+        let n: i64 = conn.query_row(&format!("SELECT count(*) FROM {t}"), [], |r| r.get(0))?;
+        out.push((t.to_string(), n));
+    }
+    Ok(out)
+}
+
 /// Handle to an open store: writer + read pool. Cloneable.
 #[derive(Clone)]
 pub struct StoreHandle {
@@ -347,6 +389,60 @@ impl StoreHandle {
             Ok("ok".to_string())
         })
         .await
+    }
+
+    /// Write a consistent snapshot of the database to `out` via `VACUUM INTO`
+    /// (v0.1.0 issue 0015, shipped in v0.1.1).
+    ///
+    /// The snapshot is taken through the single writer, so it includes every
+    /// committed WAL frame (no checkpoint needed). The copy is then verified:
+    /// `PRAGMA integrity_check` must report `ok` and the row counts of the
+    /// core tables must match the live database.
+    pub async fn snapshot_to(&self, out: &Path) -> Result<SnapshotReport> {
+        if out.exists() {
+            return Err(Error::InvalidInput(format!(
+                "snapshot target {} already exists; remove it first",
+                out.display()
+            )));
+        }
+        let out_str = out
+            .to_str()
+            .ok_or_else(|| Error::InvalidInput("snapshot path is not valid UTF-8".into()))?
+            .to_string();
+
+        // VACUUM INTO writes a clean, defragmented copy; it must run on the
+        // writer connection to serialize against concurrent writes.
+        self.write(move |conn| {
+            conn.execute("VACUUM INTO ?1", rusqlite::params![out_str])?;
+            Ok(())
+        })
+        .await?;
+
+        // Verify the snapshot before claiming success.
+        let snap = Connection::open_with_flags(out, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| Error::Storage(format!("cannot open snapshot {}: {e}", out.display())))?;
+        let integrity = schema::integrity_check(&snap)?;
+        let snapshot_counts = table_counts(&snap)?;
+        let live_counts = self.read(table_counts).await?;
+
+        if snapshot_counts != live_counts {
+            return Err(Error::Storage(format!(
+                "snapshot verification failed: table counts differ \
+                 (snapshot {snapshot_counts:?} vs live {live_counts:?})"
+            )));
+        }
+
+        let bytes = std::fs::metadata(out)
+            .map_err(|e| Error::Storage(format!("cannot stat snapshot: {e}")))?
+            .len();
+
+        tracing::info!(snapshot = %out.display(), bytes, "database snapshot written");
+        Ok(SnapshotReport {
+            path: out.to_path_buf(),
+            bytes,
+            integrity,
+            tables: snapshot_counts,
+        })
     }
 
     /// Evict old entries from the embeddings cache.

@@ -46,6 +46,23 @@ fn init_then_status_then_doctor_succeed() {
 }
 
 #[test]
+fn backup_writes_a_verified_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    run(dir.path(), &["init", "--force"]);
+
+    let (code, stdout, stderr) = run(dir.path(), &["backup", "--out", "snap.db"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("backup complete"), "{stdout}");
+    assert!(stdout.contains("integrity:   ok"), "{stdout}");
+    assert!(dir.path().join("snap.db").is_file());
+
+    // A second run must refuse to overwrite the snapshot file (exit 2).
+    let (code, _, stderr) = run(dir.path(), &["backup", "--out", "snap.db"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("already exists"), "{stderr}");
+}
+
+#[test]
 fn init_is_idempotent_without_force() {
     let dir = tempfile::tempdir().unwrap();
 

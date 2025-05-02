@@ -15,5 +15,5 @@ pub mod vecext;
 pub mod writer;
 
 pub use pool::ReadPool;
-pub use store::{MemoryRow, NewMemory, Store, StoreHandle};
+pub use store::{MemoryRow, NewMemory, SnapshotReport, Store, StoreHandle};
 pub use writer::WriterHandle;

@@ -38,6 +38,12 @@ pub enum Command {
     Status,
     /// Deeper diagnostics: sqlite-vec, FTS5, pragmas, integrity.
     Doctor,
+    /// Write a verified snapshot copy of the database.
+    Backup {
+        /// Output file for the snapshot.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
 }
 
 /// Parse and run; the caller decides process exit codes.
@@ -54,6 +60,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Init { force } => super::init::run(&cfg, force),
         Command::Status => status(&cfg),
         Command::Doctor => doctor(&cfg),
+        Command::Backup { out } => super::backup::run(&cfg, &out),
     }
 }
 
