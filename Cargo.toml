@@ -1,6 +1,6 @@
 [package]
 name = "agos-memory"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Self-hosted agent memory manager: durable, tiered, citation-backed memory for AI agents via MCP and HTTP"
@@ -19,12 +19,9 @@ name = "agos-memory"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1"
-axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 crossbeam-channel = "0.5"
-futures = "0.3"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -32,7 +29,7 @@ sha2 = "0.10"
 hex = "0.4"
 sqlite-vec-src = { path = "crates/sqlite-vec-src" }
 thiserror = "2"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 toml = "0.9"
 async-trait = "0.1"
 tracing = "0.1"
