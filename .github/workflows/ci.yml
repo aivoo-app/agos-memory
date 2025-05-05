@@ -26,8 +26,14 @@ jobs:
       - name: Tests (offline; mock providers only)
         run: cargo test --all-targets
 
-      - name: Plan guard
-        run: bash scripts/ci/check-plan-not-tracked.sh
+      - name: Plan guard (plan/ stays untracked via plan/.gitignore)
+        run: |
+          if git ls-files plan/ | grep -v '^plan/.gitignore$' | grep -q .; then
+            echo "plan-guard: FAIL — plan/ files are tracked"
+            git ls-files plan/ | grep -v '^plan/.gitignore$'
+            exit 1
+          fi
+          echo "plan-guard: OK — plan/ is untracked"
 
       - name: Release build
         run: cargo build --release

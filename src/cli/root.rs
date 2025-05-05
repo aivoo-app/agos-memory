@@ -140,14 +140,14 @@ fn doctor(cfg: &Config) -> Result<()> {
         }
     }
 
-    let fts5: String = conn
+    let fts5: i64 = conn
         .query_row("SELECT sqlite_compileoption_used('ENABLE_FTS5')", [], |r| {
             r.get(0)
         })
-        .unwrap_or_else(|_| "0".into());
+        .unwrap_or(0);
     println!(
         "  [{}] fts5 available",
-        if fts5 == "1" { " OK " } else { "FAIL" }
+        if fts5 == 1 { " OK " } else { "FAIL" }
     );
 
     let integrity = schema::integrity_check(&conn)?;

@@ -20,8 +20,9 @@ follows [SemVer](https://semver.org/).
 - Integration test suites: `tests/migrations.rs`, `tests/store_restart.rs`,
   `tests/sqlite_vec_knn.rs`, `tests/plan_guard.rs`, `tests/cli_smoke.rs`,
   `tests/backup.rs`.
-- CI: `scripts/ci/check-plan-not-tracked.sh` (the plan-guard the Makefile
-  always referenced), `make gate-v0.1.1`, and a GitHub Actions pipeline
+- CI: `make plan-guard` (fails if anything under `plan/` besides its own
+  `.gitignore` is tracked — the single file that keeps local planning notes
+  untracked), `make gate-v0.1.1`, and a GitHub Actions pipeline
   (fmt, clippy `-D warnings`, offline tests, plan-guard, release build).
 - `docs/roadmap.md` (the README linked to it before it existed).
 

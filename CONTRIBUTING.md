@@ -7,7 +7,8 @@ read it once and you can contribute to both.
 
 - Rust only; keep new dependencies minimal and justify each one.
 - `plan/`, `.clinerules`, and `AGENT.md` are local planning artifacts and are
-  **never committed** (enforced by `scripts/ci/check-plan-not-tracked.sh`).
+  **never committed** (enforced by `make plan-guard`, which fails if anything
+  under `plan/` besides `plan/.gitignore` is tracked).
 - The `main` branch is locked; work happens on version branches (e.g.
   `v0.1.0`) or issue branches, opened as PRs from there.
 
