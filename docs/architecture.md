@@ -28,8 +28,8 @@ src/
 │   ├── schema.rs    migrations (PRAGMA user_version), PRAGMA hardening
 │   ├── vecext.rs    sqlite-vec registration + verification
 │   ├── pool.rs      round-robin read connections
-│   ├── writer.rs    single-writer actor (one OS thread owns the write conn)
-│   └── store.rs     StoreHandle facade + process lock
+│   ├── writer.rs    single-writer actor (panic-safe, timeouts, health flag)
+│   └── store.rs     StoreHandle facade, flock process lock, snapshot/backup
 ├── embed/           Embedder trait: openai_compat | hash mock | none
 ├── llm/             ChatClient trait + deterministic mock
 ├── observe/         tracing init + llm_calls cost ledger
@@ -37,12 +37,16 @@ src/
 └── util/            clock (SystemClock/FakeClock), token counter, sha256
 ```
 
+CLI commands: `init`, `status`, `doctor`, `backup --out <file>`.
+
 ## Concurrency model
 
 See [ADR-003](adr/003-single-writer-actor.md): one writer thread owns the
-write connection; reads use a WAL read pool; `spawn_blocking` keeps blocking
-SQLite off async workers; a sidecar lock file enforces one process per
-database with stale-pid reclamation.
+write connection (with send/receive timeouts and panic isolation); reads use
+a WAL read pool; `spawn_blocking` keeps blocking SQLite off async workers; a
+sidecar `<db>.lock` held with a non-blocking `flock` enforces one process per
+database — the kernel releases the lock if the holder dies, so stale locks
+self-heal on the next open.
 
 ## Storage
 

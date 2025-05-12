@@ -12,8 +12,12 @@ agos-memory status   # memory counts per status
 ### One process per database
 
 Only one agos-memory process may open a database at a time. A second process
-fails with exit code 4 and the holding pid. If a process was killed while
-holding the lock, the lock is reclaimed automatically (stale-pid detection).
+fails with exit code 4 and names the holding pid. The lock is an exclusive
+non-blocking `flock` on a `<db>.lock` sidecar: the kernel releases it when the
+holder dies, so a lock left behind by a killed process is reclaimed
+automatically on the next open. The sidecar file itself may remain after a
+clean shutdown — it is empty and harmless (git-ignored via `*.lock`); do not
+delete it while a process is running.
 
 ### Upgrade
 
@@ -24,8 +28,13 @@ holding the lock, the lock is reclaimed automatically (stale-pid detection).
 
 ## Backups
 
-- Online snapshot: `VACUUM INTO '/backups/memory-<date>.db'` (planned CLI
-  wrapper: `agos-memory export --snapshot` in v0.6.0).
+- Online snapshot: `agos-memory backup --out /backups/memory-<date>.db` —
+  `VACUUM INTO` through the single writer, then verified (`integrity_check`
+  must be `ok` and core-table row counts must match the live database). Takes
+  the process lock: stop the running server first, or run the command from a
+  dedicated invocation.
+- Restore: stop any process using the database, replace the `.db` file with
+  the snapshot, run `agos-memory doctor` (schema + integrity checks).
 - Offline copy: stop the process, copy the `.db` file (WAL file is empty at
   clean shutdown).
 

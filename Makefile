@@ -10,13 +10,14 @@
 #   make test          # cargo test --all-targets
 #   make build         # release build
 #   make gate-v0.1.0   # milestone gate: check + plan-guard
+#   make gate-v0.1.1   # v0.1.1 milestone gate: fmt check + clippy + tests + plan-guard
 #   make plan-guard    # fail if plan/ or .clinerules are tracked by git
 #   make ci            # plan-guard + check (what CI runs)
 # ==============================================================================
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-.PHONY: help check fmt lint test build gate-v0.1.0 plan-guard ci
+.PHONY: help check fmt lint test build gate-v0.1.0 gate-v0.1.1 plan-guard ci
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -36,13 +37,20 @@ check: fmt lint test ## Full local gate (fmt + clippy + tests)
 build: ## Release build
 	cargo build --release
 
-plan-guard: ## Fail if plan/ or local-only files are tracked by git
-	bash scripts/ci/check-plan-not-tracked.sh
+plan-guard: ## Fail if plan/ local notes are tracked by git
+	@if git ls-files plan/ | grep -v '^plan/.gitignore$$' | grep -q .; then echo "plan-guard: FAIL — plan/ files are tracked (keep plan/ git-ignored)"; git ls-files plan/ | grep -v '^plan/.gitignore$$'; exit 1; fi
+	@echo "plan-guard: OK — plan/ is untracked"
 
 gate-v0.1.0: ## v0.1.0 milestone gate
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
-	bash scripts/ci/check-plan-not-tracked.sh
+	$(MAKE) plan-guard
+
+gate-v0.1.1: ## v0.1.1 milestone gate (same gates, named for the release)
+	cargo fmt --all -- --check
+	cargo clippy --all-targets -- -D warnings
+	cargo test --all-targets
+	$(MAKE) plan-guard
 
 ci: plan-guard check ## CI pipeline (offline; no provider access needed)

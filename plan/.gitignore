@@ -1,0 +1,4 @@
+# Local planning notes — never committed, never pushed (see .clinerules).
+# This one file keeps the whole directory untracked at once.
+*
+!.gitignore

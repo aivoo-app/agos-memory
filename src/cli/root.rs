@@ -38,6 +38,12 @@ pub enum Command {
     Status,
     /// Deeper diagnostics: sqlite-vec, FTS5, pragmas, integrity.
     Doctor,
+    /// Write a verified snapshot copy of the database.
+    Backup {
+        /// Output file for the snapshot.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
 }
 
 /// Parse and run; the caller decides process exit codes.
@@ -54,6 +60,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Init { force } => super::init::run(&cfg, force),
         Command::Status => status(&cfg),
         Command::Doctor => doctor(&cfg),
+        Command::Backup { out } => super::backup::run(&cfg, &out),
     }
 }
 
@@ -133,14 +140,14 @@ fn doctor(cfg: &Config) -> Result<()> {
         }
     }
 
-    let fts5: String = conn
+    let fts5: i64 = conn
         .query_row("SELECT sqlite_compileoption_used('ENABLE_FTS5')", [], |r| {
             r.get(0)
         })
-        .unwrap_or_else(|_| "0".into());
+        .unwrap_or(0);
     println!(
         "  [{}] fts5 available",
-        if fts5 == "1" { " OK " } else { "FAIL" }
+        if fts5 == 1 { " OK " } else { "FAIL" }
     );
 
     let integrity = schema::integrity_check(&conn)?;
