@@ -15,5 +15,5 @@ AGENT.md
 *.db
 *.db-wal
 *.db-shm
-*.lock
+*.db.lock
 .fastembed_cache/

@@ -22,6 +22,7 @@ pub mod config;
 pub mod embed;
 pub mod error;
 pub mod eval;
+pub mod http;
 pub mod llm;
 pub mod observe;
 pub mod sqlite_vec;
