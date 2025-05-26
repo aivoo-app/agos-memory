@@ -101,6 +101,36 @@ impl Default for ServerConfig {
     }
 }
 
+/// Session lifecycle configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionConfig {
+    /// Minutes of turn inactivity after which a session is closed as idle.
+    pub idle_minutes: u64,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self { idle_minutes: 30 }
+    }
+}
+
+/// Per-session token budget configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BudgetConfig {
+    /// Max LLM tokens chargeable to one session before recall degrades.
+    pub max_tokens_per_session: u64,
+}
+
+impl Default for BudgetConfig {
+    fn default() -> Self {
+        Self {
+            max_tokens_per_session: 50_000,
+        }
+    }
+}
+
 /// Top-level configuration.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -115,6 +145,10 @@ pub struct Config {
     pub llm: LlmConfig,
     /// HTTP server settings.
     pub server: ServerConfig,
+    /// Session lifecycle settings.
+    pub session: SessionConfig,
+    /// Per-session token budget settings.
+    pub budget: BudgetConfig,
     /// RUST_LOG-style filter for tracing.
     pub log_filter: String,
 }
@@ -127,6 +161,8 @@ impl Default for Config {
             embed: EmbedConfig::default(),
             llm: LlmConfig::default(),
             server: ServerConfig::default(),
+            session: SessionConfig::default(),
+            budget: BudgetConfig::default(),
             log_filter: "info".into(),
         }
     }
@@ -199,6 +235,14 @@ impl Config {
         }
         if self.agent_id.trim().is_empty() {
             return Err(Error::Config("agent_id must not be empty".into()));
+        }
+        if self.session.idle_minutes == 0 {
+            return Err(Error::Config("session.idle_minutes must be > 0".into()));
+        }
+        if self.budget.max_tokens_per_session == 0 {
+            return Err(Error::Config(
+                "budget.max_tokens_per_session must be > 0".into(),
+            ));
         }
         if !self.server.bind.starts_with("127.0.0.1") && !self.server.bind.starts_with("[::1]") {
             if self.server.token.is_empty() {
