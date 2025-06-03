@@ -9,12 +9,11 @@ use agos_memory::http::HttpConfig;
 use agos_memory::llm::{ChatClient, OpenAiCompatChat};
 
 /// Tiny single-shot HTTP stub: asserts the bearer token, returns `body`.
-fn stub_server(expected_auth: &str, body: &str) -> (String, Arc<Mutex<Option<String>>>) {
+fn stub_server(body: &str) -> (String, Arc<Mutex<Option<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let seen = Arc::new(Mutex::new(None));
     let seen2 = seen.clone();
-    let auth = expected_auth.to_string();
     let body = body.to_string();
     std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
@@ -34,7 +33,6 @@ fn stub_server(expected_auth: &str, body: &str) -> (String, Arc<Mutex<Option<Str
 #[tokio::test]
 async fn openai_compat_embed_roundtrip() {
     let (base, seen) = stub_server(
-        "Bearer tok",
         r#"{"data":[{"index":0,"embedding":[0.1,0.2]},{"index":1,"embedding":[0.3,0.4]}]}"#,
     );
     let e = OpenAiCompatEmbedder::new(HttpConfig::new(&base, "tok", 5), "m", 2);
@@ -47,7 +45,7 @@ async fn openai_compat_embed_roundtrip() {
 
 #[tokio::test]
 async fn openai_compat_embed_dim_mismatch_is_typed() {
-    let (base, _) = stub_server("Bearer tok", r#"{"data":[{"index":0,"embedding":[0.1]}]}"#);
+    let (base, _) = stub_server(r#"{"data":[{"index":0,"embedding":[0.1]}]}"#);
     let e = OpenAiCompatEmbedder::new(HttpConfig::new(&base, "tok", 5), "m", 2);
     let err = e.embed(&["a".to_string()]).await.unwrap_err();
     assert!(err.to_string().contains("dim mismatch"), "got: {err}");
@@ -55,10 +53,7 @@ async fn openai_compat_embed_dim_mismatch_is_typed() {
 
 #[tokio::test]
 async fn openai_compat_chat_roundtrip() {
-    let (base, seen) = stub_server(
-        "Bearer tok",
-        r#"{"choices":[{"message":{"content":"{\"memories\":[]}"}}]}"#,
-    );
+    let (base, seen) = stub_server(r#"{"choices":[{"message":{"content":"{\"memories\":[]}"}}]}"#);
     let c = OpenAiCompatChat::new(HttpConfig::new(&base, "tok", 5), "m");
     let out = c.complete("extract this").await.unwrap();
     assert_eq!(out, r#"{"memories":[]}"#);

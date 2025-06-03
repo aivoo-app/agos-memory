@@ -27,10 +27,11 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+futures = "0.3"
 hex = "0.4"
 sqlite-vec-src = { path = "crates/sqlite-vec-src" }
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 toml = "0.9"
 async-trait = "0.1"
 tracing = "0.1"

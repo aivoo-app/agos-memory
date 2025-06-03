@@ -222,8 +222,10 @@ mod tests {
 
     async fn test_store() -> (StoreHandle, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let mut cfg = Config::default();
-        cfg.db_path = dir.path().join("t.db");
+        let cfg = Config {
+            db_path: dir.path().join("t.db"),
+            ..Config::default()
+        };
         let store = StoreHandle::open(&cfg, 1).await.unwrap();
         (store, dir)
     }
