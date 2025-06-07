@@ -6,9 +6,13 @@
 //! - jobs/worker, extractor, persist/dedup, trust/redact — land in 0026..0029
 //! - [`remember`] — the public entry: one fact in, one memory out
 
+pub mod extract;
 pub mod jobs;
+pub mod persist;
 pub mod sessions;
 pub mod worker;
 
+pub use extract::Candidate;
 pub use jobs::{JobRow, dead_count, enqueue};
+pub use persist::{DEDUP_THRESHOLD, PersistReport};
 pub use sessions::{SessionRow, TurnRow};
