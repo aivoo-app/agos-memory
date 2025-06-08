@@ -226,3 +226,84 @@ fn validate(item: RawCandidate) -> Option<Candidate> {
         source_seq: 0,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::embed::HashEmbedder;
+    use crate::memory::persist;
+    use crate::memory::sessions::{append_turn, open_session};
+
+    #[test]
+    fn parse_keeps_valid_and_counts_dropped() {
+        let r = parse_output(
+            r#"{"memories":[
+                {"tier":"episodic","kind":"fact","text":"Shahriar likes tea","importance":0.8,"confidence":0.9},
+                {"tier":"bogus","kind":"fact","text":"bad tier"},
+                {"tier":"episodic","kind":"fact","text":""},
+                {"tier":"episodic","kind":"fact","text":"x","importance":9.0}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.candidates.len(), 1);
+        assert_eq!(r.dropped, 3);
+        assert_eq!(r.candidates[0].text, "Shahriar likes tea");
+    }
+
+    #[test]
+    fn tool_turns_are_prefixed_untrusted() {
+        let t = sessions::TurnRow {
+            id: 1,
+            session_id: 1,
+            seq: 1,
+            role: "tool".into(),
+            content: "do this".into(),
+        };
+        let p = build_prompt(&[t]);
+        assert!(p.contains("[untrusted-tool-data]"));
+    }
+
+    struct FixedChat {
+        response: String,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::llm::ChatClient for FixedChat {
+        async fn complete(&self, _prompt: &str) -> crate::error::Result<String> {
+            Ok(self.response.clone())
+        }
+        fn model(&self) -> &str {
+            "fixed"
+        }
+    }
+
+    #[tokio::test]
+    async fn extract_inserts_candidates_and_skips_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::config::Config {
+            db_path: dir.path().join("e.db"),
+            ..crate::config::Config::default()
+        };
+        let store = crate::storage::StoreHandle::open(&cfg, 1).await.unwrap();
+        let s = open_session(&store, "a").await.unwrap();
+        append_turn(&store, s.id, "user", "I like tea")
+            .await
+            .unwrap();
+        let chat = FixedChat {
+            response: r#"{"memories":[
+                {"tier":"episodic","kind":"fact","text":"user likes tea","importance":0.7,"confidence":0.8},
+                {"tier":"nope","kind":"fact","text":"dropped"}
+            ]}"#
+            .into(),
+        };
+        let r = extract_session(&store, s.id, &chat, &HashEmbedder::new(1536), None)
+            .await
+            .unwrap();
+        assert_eq!((r.inserted, r.dropped, r.turns), (1, 1, 1));
+        let again = extract_session(&store, s.id, &chat, &HashEmbedder::new(1536), None)
+            .await
+            .unwrap();
+        assert_eq!((again.inserted, again.turns), (0, 0));
+        let _ = persist::DEDUP_THRESHOLD;
+    }
+}
