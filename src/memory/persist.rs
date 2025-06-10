@@ -26,12 +26,39 @@ fn blob(vec: &[f32]) -> Vec<u8> {
 /// Everything runs inside one writer closure (one transaction): the KNN
 /// lookup, the refcount bump or the fresh insert of `memories` +
 /// `memory_versions` v1 + `vec_memories`.
+///
+/// Trust: `source_kind` web/tool/import forces `trust='untrusted'`.
+/// Low confidence (< `pending_threshold`) forces `status='pending'`.
+/// Text is redacted BEFORE embedding so secrets never reach the provider.
 pub async fn persist_candidate<E: Embedder>(
     store: &StoreHandle,
     cand: &Candidate,
     embedder: &E,
     extractor_version: &str,
 ) -> Result<PersistReport> {
+    persist_candidate_full(
+        store,
+        cand,
+        embedder,
+        extractor_version,
+        "user",
+        crate::memory::PENDING_THRESHOLD_DEFAULT,
+    )
+    .await
+}
+
+/// Full variant with provenance + pending threshold (issue 0029).
+#[allow(clippy::too_many_arguments)]
+pub async fn persist_candidate_full<E: Embedder>(
+    store: &StoreHandle,
+    cand: &Candidate,
+    embedder: &E,
+    extractor_version: &str,
+    source_kind: &str,
+    pending_threshold: f64,
+) -> Result<PersistReport> {
+    let mut cand = cand.clone();
+    cand.text = crate::memory::redact::redact(&cand.text);
     let vecs = embedder.embed(std::slice::from_ref(&cand.text)).await?;
     let vec = vecs.into_iter().next().unwrap_or_default();
     let bytes = blob(&vec);
@@ -39,6 +66,7 @@ pub async fn persist_candidate<E: Embedder>(
     let model = embedder.model().to_string();
     let cand = cand.clone();
     let ver = extractor_version.to_string();
+    let source_owned = source_kind.to_string();
     let report = store
         .write(move |conn| {
             let now = Clock::now_millis(&SystemClock);
@@ -97,14 +125,34 @@ pub async fn persist_candidate<E: Embedder>(
             let pid = uuid::Uuid::new_v4().to_string();
             let hash = crate::util::sha256_hex(&cand.text);
             let pid2 = pid.clone();
+            let trust = match source_owned.as_str() {
+                "tool" | "web" | "import" => "untrusted",
+                _ => "trusted",
+            };
+            let status = if cand.confidence < pending_threshold {
+                "pending"
+            } else {
+                "active"
+            };
             conn.execute(
                 "INSERT INTO memories (public_id, tier, kind, text, text_hash,
                  status, trust, source_kind, extractor_version, embed_model,
                  embed_dim, embed_status, ref_count, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'active', 'trusted', 'user',
-                 ?6, ?7, ?8, 'ok', 0, ?9, ?9)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                 ?9, ?10, ?11, 'ok', 0, ?12, ?12)",
                 rusqlite::params![
-                    &pid2, &cand.tier, &cand.kind, &cand.text, &hash, &ver, &model, dim, now
+                    &pid2,
+                    &cand.tier,
+                    &cand.kind,
+                    &cand.text,
+                    &hash,
+                    status,
+                    trust,
+                    &source_owned,
+                    &ver,
+                    &model,
+                    dim,
+                    now
                 ],
             )?;
             let id = conn.last_insert_rowid();
@@ -125,8 +173,8 @@ pub async fn persist_candidate<E: Embedder>(
                     tier: cand.tier.clone(),
                     kind: cand.kind.clone(),
                     text: cand.text.clone(),
-                    status: "active".into(),
-                    trust: "trusted".into(),
+                    status: status.into(),
+                    trust: trust.into(),
                     created_at: now,
                 },
                 deduped: false,

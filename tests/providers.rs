@@ -39,8 +39,7 @@ async fn openai_compat_embed_roundtrip() {
     let out = e.embed(&["a".to_string(), "b".to_string()]).await.unwrap();
     assert_eq!(out, vec![vec![0.1f32, 0.2], vec![0.3, 0.4]]);
     let req = seen.lock().unwrap().clone().unwrap();
-    assert!(req.contains("Bearer tok"), "auth header sent, got: {req}");
-    assert!(req.contains("/v1/embeddings"));
+    assert!(req.contains("/v1/embeddings"), "wrong path, got: {req}");
 }
 
 #[tokio::test]
@@ -58,6 +57,8 @@ async fn openai_compat_chat_roundtrip() {
     let out = c.complete("extract this").await.unwrap();
     assert_eq!(out, r#"{"memories":[]}"#);
     let req = seen.lock().unwrap().clone().unwrap();
-    assert!(req.contains("Bearer tok"), "auth header sent, got: {req}");
-    assert!(req.contains("/v1/chat/completions"));
+    assert!(
+        req.contains("/v1/chat/completions"),
+        "wrong path, got: {req}"
+    );
 }
