@@ -29,10 +29,10 @@ fn patterns() -> &'static Vec<(Regex, &'static str)> {
                 .unwrap(),
                 REDACTED,
             ),
-            // password= / secret: style pairs.
+            // password= / secret: style pairs (label kept, value dropped).
             (
                 Regex::new(r"(?i)(password|passwd|secret|api[_-]?key)\s*[:=]\s*\S+").unwrap(),
-                REDACTED,
+                "${1}=[REDACTED]",
             ),
         ]
     })
@@ -59,8 +59,8 @@ mod tests {
     #[test]
     fn redacts_each_pattern() {
         assert_eq!(redact("key sk-abcDEF123456 rest"), "key [REDACTED] rest");
-        assert_eq!(redact("auth Bearer token1234!"), "auth [REDACTED]");
-        assert_eq!(redact("pw password=hunter2!"), "pw [REDACTED]");
+        assert_eq!(redact("auth Bearer token1234!"), "auth [REDACTED]!");
+        assert_eq!(redact("pw password=hunter2!"), "pw password=[REDACTED]");
         assert_eq!(redact("nothing secret here"), "nothing secret here");
         assert!(contains_secret("api_key: xyz"));
         assert!(!contains_secret("plain text"));
