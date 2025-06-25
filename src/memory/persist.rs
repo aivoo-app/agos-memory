@@ -1,4 +1,6 @@
 //! Persist + dedup (issue 0028).
+use rusqlite::OptionalExtension;
+
 use crate::embed::Embedder;
 use crate::error::Result;
 use crate::memory::extract::Candidate;
@@ -43,11 +45,12 @@ pub async fn persist_candidate<E: Embedder>(
         extractor_version,
         "user",
         crate::memory::PENDING_THRESHOLD_DEFAULT,
+        DEDUP_THRESHOLD,
     )
     .await
 }
 
-/// Full variant with provenance + pending threshold (issue 0029).
+/// Full variant with provenance + thresholds (issue 0029).
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_candidate_full<E: Embedder>(
     store: &StoreHandle,
@@ -56,6 +59,7 @@ pub async fn persist_candidate_full<E: Embedder>(
     extractor_version: &str,
     source_kind: &str,
     pending_threshold: f64,
+    dedup_threshold: f64,
 ) -> Result<PersistReport> {
     let mut cand = cand.clone();
     cand.text = crate::memory::redact::redact(&cand.text);
@@ -82,18 +86,28 @@ pub async fn persist_candidate_full<E: Embedder>(
                 .filter_map(|r| r.ok())
                 .next();
             if let Some((rowid, dist)) = best {
-                // sqlite-vec cosine distance on unit vectors: d²/2 = 1 - cos.
-                let sim = 1.0 - dist * dist / 2.0;
-                if sim > DEDUP_THRESHOLD {
-                    let pid: String = conn.query_row(
-                        "SELECT public_id FROM memories WHERE id = ?1",
-                        [rowid],
-                        |r| r.get(0),
-                    )?;
+                // sqlite-vec `distance_metric=cosine` returns `1 - cos` directly
+                // (see distance_cosine_float / cosine_float_neon in
+                // crates/sqlite-vec-src/src/sqlite-vec.c), so similarity is the
+                // plain complement — it is NOT a squared-L2 distance.
+                let sim = 1.0 - dist.clamp(0.0, 2.0);
+                if sim > dedup_threshold {
+                    // D20: bump refcount + last-referenced, link `refines`, and
+                    // tag the whole cluster so maintenance can collapse it.
+                    let cluster: i64 = conn
+                        .query_row(
+                            "SELECT COALESCE(dedup_cluster_id, id) FROM memories WHERE id = ?1",
+                            [rowid],
+                            |r| r.get(0),
+                        )
+                        .optional()?
+                        .unwrap_or(rowid);
                     conn.execute(
                         "UPDATE memories SET ref_count = ref_count + 1,
-                         last_referenced_at = ?1, updated_at = ?1 WHERE id = ?2",
-                        rusqlite::params![now, rowid],
+                         last_referenced_at = ?1, updated_at = ?1,
+                         dedup_cluster_id = COALESCE(dedup_cluster_id, ?2)
+                         WHERE id = ?3",
+                        rusqlite::params![now, cluster, rowid],
                     )?;
                     conn.execute(
                         "INSERT OR IGNORE INTO memory_links
@@ -118,7 +132,6 @@ pub async fn persist_candidate_full<E: Embedder>(
                             })
                         },
                     )?;
-                    let _ = pid;
                     return Ok(PersistReport { row, deduped: true });
                 }
             }
@@ -165,6 +178,169 @@ pub async fn persist_candidate_full<E: Embedder>(
                 "INSERT INTO vec_memories(rowid, embedding, tier, status, trust, kind, pinned)
                  VALUES (?1, ?2, ?3, 0, 0, ?4, 0)",
                 rusqlite::params![id, &bytes, &cand.tier, &cand.kind],
+            )?;
+            Ok(PersistReport {
+                row: MemoryRow {
+                    id,
+                    public_id: pid,
+                    tier: cand.tier.clone(),
+                    kind: cand.kind.clone(),
+                    text: cand.text.clone(),
+                    status: status.into(),
+                    trust: trust.into(),
+                    created_at: now,
+                },
+                deduped: false,
+            })
+        })
+        .await?;
+    Ok(report)
+}
+
+/// Degraded persist: no embedding provider (decision D4, `provider = none`).
+///
+/// Stores the redacted memory with `embed_status='skipped'` and no `vec_memories`
+/// row, so keyword-only (FTS5) recall still finds it. Dedup falls back to
+/// `text_hash` because there are no vectors to compare.
+#[allow(clippy::too_many_arguments)]
+pub async fn persist_candidate_degraded(
+    store: &StoreHandle,
+    cand: &Candidate,
+    extractor_version: &str,
+    source_kind: &str,
+    pending_threshold: f64,
+) -> Result<PersistReport> {
+    persist_candidate_no_vector(
+        store,
+        cand,
+        extractor_version,
+        source_kind,
+        pending_threshold,
+        "skipped",
+    )
+    .await
+}
+
+/// Persist without a vector because the embedder *failed* (issue 0030).
+///
+/// Same shape as [`persist_candidate_degraded`] but records
+/// `embed_status='failed'` instead of `'skipped'`, so a later `reembed` job can
+/// tell "provider intentionally absent" from "provider was down and this row
+/// still needs a vector". The fact itself is never lost to a provider outage.
+#[allow(clippy::too_many_arguments)]
+pub async fn persist_candidate_unembedded(
+    store: &StoreHandle,
+    cand: &Candidate,
+    extractor_version: &str,
+    source_kind: &str,
+    pending_threshold: f64,
+) -> Result<PersistReport> {
+    persist_candidate_no_vector(
+        store,
+        cand,
+        extractor_version,
+        source_kind,
+        pending_threshold,
+        "failed",
+    )
+    .await
+}
+
+/// Shared no-vector persist. `embed_status` is `'skipped'` (provider = none) or
+/// `'failed'` (provider errored); the schema restricts it to that pair plus
+/// `'pending'`/`'ok'`.
+#[allow(clippy::too_many_arguments)]
+async fn persist_candidate_no_vector(
+    store: &StoreHandle,
+    cand: &Candidate,
+    extractor_version: &str,
+    source_kind: &str,
+    pending_threshold: f64,
+    embed_status: &'static str,
+) -> Result<PersistReport> {
+    let mut cand = cand.clone();
+    cand.text = crate::memory::redact::redact(&cand.text);
+    let ver = extractor_version.to_string();
+    let source_owned = source_kind.to_string();
+    let report = store
+        .write(move |conn| {
+            let now = Clock::now_millis(&SystemClock);
+            let hash = crate::util::sha256_hex(&cand.text);
+
+            // Degraded dedup: identical text bumps the existing row.
+            let existing: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM memories WHERE text_hash = ?1 AND status IN ('active','pending')",
+                    [&hash],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(id) = existing {
+                conn.execute(
+                    "UPDATE memories SET ref_count = ref_count + 1,
+                     last_referenced_at = ?1, updated_at = ?1 WHERE id = ?2",
+                    rusqlite::params![now, id],
+                )?;
+                conn.execute(
+                    "INSERT OR IGNORE INTO memory_links
+                     (from_memory_id, to_memory_id, kind, created_at)
+                     VALUES (?1, ?1, 'refines', ?2)",
+                    rusqlite::params![id, now],
+                )?;
+                let row = conn.query_row(
+                    "SELECT id, public_id, tier, kind, text, status, trust, created_at
+                     FROM memories WHERE id = ?1",
+                    [id],
+                    |r| {
+                        Ok(MemoryRow {
+                            id: r.get(0)?,
+                            public_id: r.get(1)?,
+                            tier: r.get(2)?,
+                            kind: r.get(3)?,
+                            text: r.get(4)?,
+                            status: r.get(5)?,
+                            trust: r.get(6)?,
+                            created_at: r.get(7)?,
+                        })
+                    },
+                )?;
+                return Ok(PersistReport { row, deduped: true });
+            }
+
+            let pid = uuid::Uuid::new_v4().to_string();
+            let trust = match source_owned.as_str() {
+                "tool" | "web" | "import" => "untrusted",
+                _ => "trusted",
+            };
+            let status = if cand.confidence < pending_threshold {
+                "pending"
+            } else {
+                "active"
+            };
+            conn.execute(
+                "INSERT INTO memories (public_id, tier, kind, text, text_hash,
+                 status, trust, source_kind, extractor_version, embed_status,
+                 ref_count, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?11)",
+                rusqlite::params![
+                    &pid,
+                    &cand.tier,
+                    &cand.kind,
+                    &cand.text,
+                    &hash,
+                    status,
+                    trust,
+                    &source_owned,
+                    &ver,
+                    embed_status,
+                    now
+                ],
+            )?;
+            let id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO memory_versions (memory_id, version, text, text_hash, created_at)
+                 VALUES (?1, 1, ?2, ?3, ?4)",
+                rusqlite::params![id, &cand.text, &hash, now],
             )?;
             Ok(PersistReport {
                 row: MemoryRow {

@@ -191,6 +191,22 @@ pub async fn get_open_session(store: &StoreHandle, agent_id: &str) -> Result<Opt
         })
         .await
 }
+/// Internal id for a session's public id, if it exists.
+pub async fn session_id_by_public(store: &StoreHandle, public_id: &str) -> Result<Option<i64>> {
+    let public_id = public_id.to_string();
+    store
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT id FROM sessions WHERE public_id = ?1",
+                [&public_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.into())
+        })
+        .await
+}
+
 /// All turns of a session in seq order.
 pub async fn session_turns(store: &StoreHandle, session_id: i64) -> Result<Vec<TurnRow>> {
     store
