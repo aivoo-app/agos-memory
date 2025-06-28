@@ -1,4 +1,23 @@
 //! Binary entry point: parse CLI, init tracing, dispatch, map errors to exit codes.
+//!
+//! POSIX shells (and tools like `head`/`grep`) close the stdout pipe early; by
+//! default Rust panics on `BrokenPipe` ("failed printing to stdout"), which
+//! surfaces as an ugly stack trace. Reset SIGPIPE to its default disposition so
+//! the process simply exits (as `head`, `cat`, etc. do), keeping the CLI
+//! pipeline-friendly.
+
+#[cfg(unix)]
+fn reset_sigpipe() {
+    use libc;
+    // SAFETY: libc::signal with SIGPIPE and default (0) handler is signal-
+    // safe and only sets a disposition.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn reset_sigpipe() {}
 
 use clap::Parser;
 
@@ -9,7 +28,8 @@ use agos_memory::error::Error;
 fn main() {
     let cli = Cli::parse();
 
-    // Tracing first: config errors should be logged, not just printed.
+    reset_sigpipe();
+
     let cfg = Config::load(cli.config.as_deref().map(std::path::Path::new)).unwrap_or_default();
     let _ = agos_memory::observe::init_tracing(&cfg.log_filter);
 

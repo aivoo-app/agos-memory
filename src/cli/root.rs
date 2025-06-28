@@ -44,6 +44,55 @@ pub enum Command {
         #[arg(long)]
         out: std::path::PathBuf,
     },
+    /// Store one fact as a durable memory (redacted, embedded, deduped).
+    Remember {
+        /// The fact text.
+        #[arg(long)]
+        text: String,
+        /// Memory tier (default episodic).
+        #[arg(long, default_value = "episodic")]
+        tier: String,
+        /// Memory kind (default fact).
+        #[arg(long, default_value = "fact")]
+        kind: String,
+        /// Provenance: user/agent/tool/file/web/import (tool/web → untrusted).
+        #[arg(long, default_value = "user")]
+        source_kind: String,
+        /// Extraction confidence 0..1 (below threshold → pending).
+        #[arg(long, default_value_t = 0.8)]
+        confidence: f64,
+    },
+    /// Manage sessions and turns.
+    Session {
+        #[command(subcommand)]
+        cmd: SessionCmd,
+    },
+}
+
+/// Session subcommands.
+#[derive(Debug, Subcommand)]
+pub enum SessionCmd {
+    /// Open a new session for this agent.
+    Open,
+    /// Append a turn (defaults to the open session).
+    Append {
+        /// Session public id (defaults to the open session).
+        #[arg(long)]
+        session: Option<String>,
+        /// Turn role: user/assistant/system/tool.
+        #[arg(long, default_value = "user")]
+        role: String,
+        /// Turn content.
+        #[arg(long)]
+        content: String,
+    },
+    /// Close a session (defaults to the open session).
+    Close {
+        /// Session public id (defaults to the open session).
+        session: Option<String>,
+    },
+    /// Close sessions idle longer than the configured timeout.
+    IdleClose,
 }
 
 /// Parse and run; the caller decides process exit codes.
@@ -61,6 +110,14 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Status => status(&cfg),
         Command::Doctor => doctor(&cfg),
         Command::Backup { out } => super::backup::run(&cfg, &out),
+        Command::Remember {
+            text,
+            tier,
+            kind,
+            source_kind,
+            confidence,
+        } => super::remember::run_remember(&cfg, &text, &tier, &kind, &source_kind, confidence),
+        Command::Session { cmd } => super::remember::run_session(&cfg, &cmd),
     }
 }
 
