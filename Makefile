@@ -11,13 +11,14 @@
 #   make build         # release build
 #   make gate-v0.1.0   # milestone gate: check + plan-guard
 #   make gate-v0.1.1   # v0.1.1 milestone gate: fmt check + clippy + tests + plan-guard
+#   make gate-v0.2.0   # v0.2.0 milestone gate: check + plan-guard + release build + CLI smoke
 #   make plan-guard    # fail if plan/ or .clinerules are tracked by git
 #   make ci            # plan-guard + check (what CI runs)
 # ==============================================================================
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-.PHONY: help check fmt lint test build gate-v0.1.0 gate-v0.1.1 plan-guard ci
+.PHONY: help check fmt lint test build gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 plan-guard ci smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -52,5 +53,29 @@ gate-v0.1.1: ## v0.1.1 milestone gate (same gates, named for the release)
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
 	$(MAKE) plan-guard
+
+smoke: ## CLI smoke test on a throwaway database (init/session/remember/status/doctor)
+	@set -euo pipefail; \
+	DIR=$$(mktemp -d); \
+	DB=$$DIR/smoke.db; \
+	printf "db_path = 'smoke.db'\nagent_id = 'default'\n\n[embed]\nprovider = 'none'\n" > $$DIR/agos-memory.toml; \
+	CFG="--config $$DIR/agos-memory.toml --db $$DB"; \
+	cargo run --quiet -- $$CFG init >/dev/null; \
+	cargo run --quiet -- $$CFG status | grep -q 'schema:'; \
+	cargo run --quiet -- $$CFG doctor | grep -q 'doctor done'; \
+	cargo run --quiet -- $$CFG session open | grep -q 'session:'; \
+	cargo run --quiet -- $$CFG session append --role user --content 'I prefer Rust for CLI tools.' | grep -q 'turn:'; \
+	cargo run --quiet -- $$CFG remember --text 'Prefers Rust for CLI tools.' | grep -q 'memory:'; \
+	cargo run --quiet -- $$CFG status | grep -q 'memories\[active\]: 1'; \
+	rm -rf $$DIR; \
+	echo "smoke: OK (offline: provider = 'none')"
+
+gate-v0.2.0: ## v0.2.0 milestone gate (write path: fmt + clippy + tests + plan-guard + build + smoke)
+	cargo fmt --all -- --check
+	cargo clippy --all-targets -- -D warnings
+	cargo test --all-targets
+	$(MAKE) plan-guard
+	cargo build --release
+	$(MAKE) smoke
 
 ci: plan-guard check ## CI pipeline (offline; no provider access needed)

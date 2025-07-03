@@ -8,6 +8,9 @@
 use async_trait::async_trait;
 
 use crate::error::{Error, Result};
+use crate::http::{HttpConfig, post_json};
+
+use std::time::Instant;
 
 /// A chat-completion-style client for extraction prompts.
 #[async_trait]
@@ -59,6 +62,104 @@ pub fn ensure_json(response: &str) -> Result<&str> {
     serde_json::from_str::<serde_json::Value>(trimmed)
         .map_err(|e| Error::Llm(format!("response is not valid JSON: {e}")))?;
     Ok(trimmed)
+}
+
+/// OpenAI-compatible chat provider (agos-proxy `/v1/chat/completions`).
+pub struct OpenAiCompatChat {
+    cfg: HttpConfig,
+    model: String,
+    ledger: Option<crate::embed::LedgerSink>,
+}
+
+impl OpenAiCompatChat {
+    /// Build for `model`.
+    pub fn new(cfg: HttpConfig, model: impl Into<String>) -> Self {
+        Self {
+            cfg,
+            model: model.into(),
+            ledger: None,
+        }
+    }
+
+    /// Attach a ledger sink (one entry per `complete` call).
+    pub fn with_ledger(mut self, sink: crate::embed::LedgerSink) -> Self {
+        self.ledger = Some(sink);
+        self
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ChatRequest<'a> {
+    model: &'a str,
+    messages: Vec<ChatMessage<'a>>,
+    #[serde(default)]
+    temperature: f32,
+}
+
+#[derive(serde::Serialize)]
+struct ChatMessage<'a> {
+    role: &'a str,
+    content: &'a str,
+}
+
+#[derive(serde::Deserialize)]
+struct ChatResponse {
+    #[serde(default)]
+    choices: Vec<ChatChoice>,
+}
+
+#[derive(serde::Deserialize)]
+struct ChatChoice {
+    #[serde(default)]
+    message: ChatContent,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct ChatContent {
+    #[serde(default)]
+    content: String,
+}
+
+#[async_trait]
+impl ChatClient for OpenAiCompatChat {
+    async fn complete(&self, prompt: &str) -> Result<String> {
+        let started = Instant::now();
+        let url = format!("{}/v1/chat/completions", self.cfg.base_url);
+        let body = ChatRequest {
+            model: &self.model,
+            messages: vec![ChatMessage {
+                role: "user",
+                content: prompt,
+            }],
+            temperature: 0.0,
+        };
+        let resp: ChatResponse = post_json(&url, &body, &self.cfg, "chat", Error::Llm).await?;
+        let text = resp
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| {
+                Error::Llm(format!(
+                    "chat response from {url} has no choices[0].message.content"
+                ))
+            })?;
+        if let Some(sink) = &self.ledger {
+            sink(crate::observe::ledger::estimated_entry(
+                crate::observe::ledger::Purpose::Extract,
+                &self.model,
+                prompt,
+                &text,
+                started.elapsed().as_millis() as u64,
+                true,
+            ));
+        }
+        Ok(text)
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
 }
 
 #[cfg(test)]

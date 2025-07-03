@@ -2,6 +2,7 @@
 
 pub mod backup;
 pub mod init;
+pub mod remember;
 pub mod root;
 
 pub use root::{Cli, run};

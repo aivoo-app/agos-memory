@@ -89,6 +89,77 @@ fn doctor_fails_with_a_clear_message_when_the_database_is_missing() {
 }
 
 #[test]
+fn remember_writes_a_memory_offline_and_it_survives_the_process() {
+    let dir = tempfile::tempdir().unwrap();
+    // Offline config: degraded keyword-only mode, no provider needed (D4).
+    std::fs::write(
+        dir.path().join("agos-memory.toml"),
+        "db_path = 'smoke.db'\nagent_id = 'default'\n\n[embed]\nprovider = 'none'\n",
+    )
+    .unwrap();
+
+    let (code, stdout, stderr) = run(dir.path(), &["session", "open"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("session:"), "{stdout}");
+
+    let (code, stdout, stderr) = run(
+        dir.path(),
+        &[
+            "session",
+            "append",
+            "--role",
+            "user",
+            "--content",
+            "I prefer Rust for CLI tools.",
+        ],
+    );
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("turn:"), "{stdout}");
+
+    let (code, stdout, stderr) = run(dir.path(), &["remember", "--text", "Prefers Rust."]);
+    assert_eq!(
+        code, 0,
+        "offline remember must not need a provider: {stdout}{stderr}"
+    );
+    assert!(stdout.contains("memory:"), "{stdout}");
+
+    // A *new process* opens the same database: the fact is durable.
+    let (code, stdout, stderr) = run(dir.path(), &["status"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(
+        stdout.contains("memories[active]: 1"),
+        "fact must survive the process: {stdout}"
+    );
+}
+
+#[test]
+fn remember_keeps_the_fact_when_the_embedding_provider_is_unreachable() {
+    let dir = tempfile::tempdir().unwrap();
+    // Port 1 refuses immediately: the provider is unreachable, not slow.
+    std::fs::write(
+        dir.path().join("agos-memory.toml"),
+        "db_path = 'smoke.db'\nagent_id = 'default'\n\n\
+         [embed]\nprovider = 'openai_compat'\nbase_url = 'http://127.0.0.1:1'\n\
+         model = 'text-embedding-3-small'\ntimeout_secs = 2\n",
+    )
+    .unwrap();
+
+    let (code, stdout, stderr) = run(dir.path(), &["remember", "--text", "Provider is down."]);
+    assert_eq!(
+        code, 0,
+        "a provider outage must never lose a fact: {stdout}{stderr}"
+    );
+    assert!(stdout.contains("memory:"), "{stdout}");
+
+    let (code, stdout, stderr) = run(dir.path(), &["status"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(
+        stdout.contains("memories[active]: 1"),
+        "unembedded fact must still be stored: {stdout}"
+    );
+}
+
+#[test]
 fn status_reports_a_missing_database_and_exit_codes_stay_stable() {
     let dir = tempfile::tempdir().unwrap();
     let (code, stdout, _) = run(dir.path(), &["status"]);

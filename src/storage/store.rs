@@ -219,6 +219,23 @@ impl StoreHandle {
         .await
     }
 
+    /// Embedding dimension pinned in `meta` at first init (1536 by default).
+    ///
+    /// Used by provider construction so the embedder matches the `vec0` table.
+    pub async fn embed_dim(&self) -> Result<usize> {
+        self.read(|conn| {
+            let stored: i64 = conn
+                .query_row(
+                    "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'embed_dim'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            Ok(if stored == 0 { 1536 } else { stored as usize })
+        })
+        .await
+    }
+
     /// Run a blocking read on a pooled connection, off the async runtime.
     pub async fn read<T, F>(&self, f: F) -> Result<T>
     where

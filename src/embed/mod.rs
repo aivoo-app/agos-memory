@@ -14,7 +14,11 @@
 use async_trait::async_trait;
 
 use crate::error::{Error, Result};
+use crate::http::{HttpConfig, post_json};
+use crate::observe::ledger::{LedgerEntry, Purpose};
 use crate::util::sha256_hex;
+
+use std::time::Instant;
 
 /// Produces embedding vectors for text batches.
 #[async_trait]
@@ -86,6 +90,110 @@ impl Embedder for NoEmbedder {
 
     fn dim(&self) -> usize {
         0
+    }
+}
+
+/// Sink for per-call ledger entries. The memory layer wires this to the
+/// `llm_calls` table; provider crates never touch SQLite directly.
+pub type LedgerSink = std::sync::Arc<dyn Fn(LedgerEntry) + Send + Sync>;
+
+/// OpenAI-compatible embedding provider (agos-proxy `/v1/embeddings`).
+pub struct OpenAiCompatEmbedder {
+    cfg: HttpConfig,
+    model: String,
+    dim: usize,
+    ledger: Option<LedgerSink>,
+}
+
+impl OpenAiCompatEmbedder {
+    /// Build for `model` with expected `dim`; dim is verified on first response.
+    pub fn new(cfg: HttpConfig, model: impl Into<String>, dim: usize) -> Self {
+        Self {
+            cfg,
+            model: model.into(),
+            dim,
+            ledger: None,
+        }
+    }
+
+    /// Attach a ledger sink (one entry per `embed` call).
+    pub fn with_ledger(mut self, sink: LedgerSink) -> Self {
+        self.ledger = Some(sink);
+        self
+    }
+}
+
+#[derive(serde::Serialize)]
+struct EmbedRequest<'a> {
+    model: &'a str,
+    input: &'a [String],
+}
+
+#[derive(serde::Deserialize)]
+struct EmbedResponse {
+    #[serde(default)]
+    data: Vec<EmbedDatum>,
+}
+
+#[derive(serde::Deserialize)]
+struct EmbedDatum {
+    #[serde(default)]
+    index: usize,
+    embedding: Vec<f32>,
+}
+
+#[async_trait]
+impl Embedder for OpenAiCompatEmbedder {
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let started = Instant::now();
+        let url = format!("{}/v1/embeddings", self.cfg.base_url);
+        let body = EmbedRequest {
+            model: &self.model,
+            input: texts,
+        };
+        let resp: EmbedResponse =
+            post_json(&url, &body, &self.cfg, "embeddings", Error::Embedder).await?;
+        if resp.data.len() != texts.len() {
+            return Err(Error::Embedder(format!(
+                "embeddings response returned {} vectors for {} inputs",
+                resp.data.len(),
+                texts.len()
+            )));
+        }
+        let mut ordered = resp.data;
+        ordered.sort_by_key(|d| d.index);
+        let mut out = Vec::with_capacity(ordered.len());
+        for d in ordered {
+            if d.embedding.len() != self.dim {
+                return Err(Error::Embedder(format!(
+                    "embedding dim mismatch: provider returned {} for model '{}', expected {}",
+                    d.embedding.len(),
+                    self.model,
+                    self.dim
+                )));
+            }
+            out.push(d.embedding);
+        }
+        if let Some(sink) = &self.ledger {
+            let joined = texts.join("\n");
+            sink(crate::observe::ledger::estimated_entry(
+                Purpose::Embed,
+                &self.model,
+                &joined,
+                "",
+                started.elapsed().as_millis() as u64,
+                true,
+            ));
+        }
+        Ok(out)
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn dim(&self) -> usize {
+        self.dim
     }
 }
 

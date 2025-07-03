@@ -101,8 +101,62 @@ impl Default for ServerConfig {
     }
 }
 
+/// Session lifecycle configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionConfig {
+    /// Minutes of turn inactivity after which a session is closed as idle.
+    pub idle_minutes: u64,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self { idle_minutes: 30 }
+    }
+}
+
+/// Per-session token budget configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BudgetConfig {
+    /// Max LLM tokens chargeable to one session before recall degrades.
+    pub max_tokens_per_session: u64,
+}
+
+impl Default for BudgetConfig {
+    fn default() -> Self {
+        Self {
+            max_tokens_per_session: 50_000,
+        }
+    }
+}
+
+/// Memory write-path tuning.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryConfig {
+    /// Extracted candidates below this confidence are stored as `pending`
+    /// instead of `active` (default 0.4).
+    pub pending_threshold: f64,
+    /// Cosine similarity above which a candidate is treated as a duplicate of
+    /// an existing memory and bumps its reference count (default 0.92).
+    pub dedup_threshold: f64,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            pending_threshold: 0.4,
+            dedup_threshold: 0.92,
+        }
+    }
+}
+
 /// Top-level configuration.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `PartialEq` only — `MemoryConfig` carries `f64` thresholds, which are not
+/// `Eq`. Nothing keys a map on a `Config`, so this is not a loss.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Path to the SQLite database file.
@@ -115,6 +169,12 @@ pub struct Config {
     pub llm: LlmConfig,
     /// HTTP server settings.
     pub server: ServerConfig,
+    /// Session lifecycle settings.
+    pub session: SessionConfig,
+    /// Per-session token budget settings.
+    pub budget: BudgetConfig,
+    /// Write-path tuning (pending/dedup thresholds).
+    pub memory: MemoryConfig,
     /// RUST_LOG-style filter for tracing.
     pub log_filter: String,
 }
@@ -127,6 +187,9 @@ impl Default for Config {
             embed: EmbedConfig::default(),
             llm: LlmConfig::default(),
             server: ServerConfig::default(),
+            session: SessionConfig::default(),
+            budget: BudgetConfig::default(),
+            memory: MemoryConfig::default(),
             log_filter: "info".into(),
         }
     }
@@ -199,6 +262,24 @@ impl Config {
         }
         if self.agent_id.trim().is_empty() {
             return Err(Error::Config("agent_id must not be empty".into()));
+        }
+        if self.session.idle_minutes == 0 {
+            return Err(Error::Config("session.idle_minutes must be > 0".into()));
+        }
+        if self.budget.max_tokens_per_session == 0 {
+            return Err(Error::Config(
+                "budget.max_tokens_per_session must be > 0".into(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.memory.pending_threshold) {
+            return Err(Error::Config(
+                "memory.pending_threshold must be between 0.0 and 1.0".into(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.memory.dedup_threshold) {
+            return Err(Error::Config(
+                "memory.dedup_threshold must be between 0.0 and 1.0".into(),
+            ));
         }
         if !self.server.bind.starts_with("127.0.0.1") && !self.server.bind.starts_with("[::1]") {
             if self.server.token.is_empty() {

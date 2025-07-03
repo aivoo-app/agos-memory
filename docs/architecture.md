@@ -24,20 +24,30 @@ src/
 ├── cli/             clap root + init/status/doctor
 ├── config.rs        layered config; fail-closed bind validation
 ├── error.rs         typed errors, actionable messages
+├── http.rs          shared HTTP client for providers (ADR-004)
 ├── storage/
 │   ├── schema.rs    migrations (PRAGMA user_version), PRAGMA hardening
 │   ├── vecext.rs    sqlite-vec registration + verification
 │   ├── pool.rs      round-robin read connections
 │   ├── writer.rs    single-writer actor (panic-safe, timeouts, health flag)
 │   └── store.rs     StoreHandle facade, flock process lock, snapshot/backup
+├── memory/          write path
+│   ├── sessions.rs  sessions + turns, idle close
+│   ├── jobs.rs      durable queue: retry/backoff, DLQ, idempotency keys
+│   ├── worker.rs    polling worker dispatching jobs to handlers
+│   ├── extract.rs   prompt -> chat JSON -> validated candidates
+│   ├── persist.rs   embed, cosine dedup, insert memory + version + vector
+│   ├── redact.rs    secret redaction before embed and before insert
+│   └── mod.rs       `remember()`: the write-path entry point
 ├── embed/           Embedder trait: openai_compat | hash mock | none
-├── llm/             ChatClient trait + deterministic mock
+├── llm/             ChatClient trait: openai_compat | deterministic mock
 ├── observe/         tracing init + llm_calls cost ledger
 ├── eval/            offline eval harness (precision/recall/MRR/leaks)
 └── util/            clock (SystemClock/FakeClock), token counter, sha256
 ```
 
-CLI commands: `init`, `status`, `doctor`, `backup --out <file>`.
+CLI commands: `init`, `status`, `doctor`, `backup --out <file>`,
+`remember --text <t>`, `session open|append|close|idle-close`.
 
 ## Concurrency model
 
@@ -68,14 +78,48 @@ provenance/importance/confidence/versioning fields), `memory_versions`,
 `llm_calls` (cost ledger), `token_ledger` (per-answer budget), `recalls` +
 `recall_items` (recall audit), `pins`, `forget_audit`, `tombstones`.
 
+## Write path (v0.2.0)
+
+`remember()` is the single write-path entry point (CLI now, MCP/HTTP in
+v0.5.0). One call performs, atomically per database transaction where it
+matters:
+
+1. **Redact** — `sk-…`, `Bearer …`, PEM private-key blocks and
+   `password=`/`api_key=`-style pairs become `[REDACTED]` *before* the text is
+   embedded or stored, so a secret never reaches the provider, the vector
+   table, or `memories.text`.
+2. **Trust** — provenance decides trust: `tool`, `web` and `import` sources
+   produce `trust = 'untrusted'` memories; the default recall policy never
+   injects them ([ADR-001] lineage, D13).
+3. **Status** — candidates below
+   `[memory] pending_threshold` (default 0.4) are stored as
+   `status = 'pending'` rather than `active`.
+4. **Embed** — via the configured provider (ADR-004); with
+   `provider = 'none'` the store degrades to keyword-only and no vector row
+   is written.
+5. **Dedup** — a KNN lookup over `vec_memories` in the same tier compares
+   cosine similarity. Above `[memory] dedup_threshold` (default 0.92) the
+   existing row wins: `ref_count` is bumped, `last_referenced_at` refreshed,
+   a `refines` link is added, and `dedup_cluster_id` is set. Otherwise a new
+   row is inserted together with its `memory_versions` v1 row and its vector.
+6. **Record** — extraction is a durable job (`extract`) with an idempotency
+   key, `max_attempts`, exponential backoff, and a `jobs_dead` DLQ the
+   operator can requeue. Every provider call appends to the `llm_calls`
+   cost ledger; a per-session ceiling (`[budget] max_tokens_per_session`)
+   refuses further extraction rather than silently overspending.
+
 ## Roadmap topics
 
-- Write path (v0.2.0): extraction via `ChatClient`, durable jobs with DLQ,
-  dedup by text hash + cosine, confidence-gated `pending` status.
+- Write path (v0.2.0, **shipped**): see above — sessions/turns, extraction via
+  `ChatClient`, durable jobs with DLQ, redaction, cosine dedup, confidence-gated
+  `pending` status.
 - Recall (v0.3.0): embed -> KNN + BM25 -> hard filter -> rerank
   (`w1*sim + w2*importance + w3*decay`) -> tier-split packing -> fenced
   citations; no-hit returns explicit empties; everything audited.
 - Forgetting (v0.4.0): soft deprecation by default; hard delete purges row +
   FTS + vector + versions, then `secure_delete` + `VACUUM` + tombstone.
 
+[ADR-001]: adr/001-why-rust-memory-store.md
 [ADR-002]: adr/002-embedding-pluggable-and-pinned.md
+[ADR-004]: adr/004-http-client.md
+[ADR-005]: adr/005-lock-liveness-flock.md
