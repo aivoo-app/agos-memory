@@ -130,6 +130,11 @@ impl std::fmt::Debug for Store {
 }
 
 impl StoreHandle {
+    /// Agent ID this store was opened for.
+    pub fn agent_id(&self) -> &str {
+        &self.inner.agent_id
+    }
+
     /// Open (or create) the database at `cfg.db_path`, migrate, register
     /// sqlite-vec, create the vec0 table, and enforce the single-process rule.
     pub async fn open(cfg: &Config, read_pool_size: usize) -> Result<Self> {
