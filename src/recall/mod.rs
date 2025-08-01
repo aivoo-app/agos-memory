@@ -23,6 +23,8 @@ use crate::storage::StoreHandle;
 use crate::util::SystemClock;
 use crate::util::clock::Clock;
 
+use rusqlite::OptionalExtension;
+
 /// Vec0 metadata code for `status` (CHECK order in the schema).
 const STATUS_ACTIVE: i64 = 0;
 const STATUS_PENDING: i64 = 1;
@@ -51,6 +53,96 @@ fn fts_match_expr(text: &str) -> String {
 /// Vec-leg parameter blob (little-endian f32, same encoding as the write path).
 fn blob(vec: &[f32]) -> Vec<u8> {
     vec.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Decode a cached LE-f32 blob, rejecting dimension drift.
+fn decode_blob(bytes: &[u8], expected_dim: usize) -> Option<Vec<f32>> {
+    if bytes.len() != expected_dim * 4 {
+        return None;
+    }
+    Some(
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect(),
+    )
+}
+
+/// Query embedding with the `embeddings_cache` (0031 note: queries and writes
+/// must stop double-spending embed calls). Cache reads and writes are
+/// best-effort — any cache failure falls through to a plain embed, and an
+/// embedder refusal still yields `None` (degraded mode).
+async fn query_embedding(
+    store: &StoreHandle,
+    embedder: &dyn Embedder,
+    text: &str,
+) -> Result<Option<Vec<f32>>> {
+    let model = embedder.model().to_string();
+    let dim = embedder.dim();
+    let hash = crate::util::sha256_hex(text);
+
+    // Best-effort cache read.
+    let cached: Option<Vec<f32>> = store
+        .read({
+            let hash = hash.clone();
+            let model = model.clone();
+            move |conn| {
+                let blob: Option<Vec<u8>> = conn
+                    .query_row(
+                        "SELECT vector FROM embeddings_cache
+                         WHERE content_hash = ?1 AND embed_model = ?2",
+                        rusqlite::params![hash, model],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| Error::Storage(e.to_string()))?;
+                Ok(blob.and_then(|b| decode_blob(&b, dim)))
+            }
+        })
+        .await
+        .unwrap_or(None);
+    if let Some(vec) = cached {
+        return Ok(Some(vec));
+    }
+
+    // Cache miss (or unreadable cache): embed.
+    let text = text.to_string();
+    let Some(vec) = embedder
+        .embed(std::slice::from_ref(&text))
+        .await
+        .ok()
+        .and_then(|mut v| {
+            if v.is_empty() {
+                None
+            } else {
+                Some(std::mem::take(&mut v[0]))
+            }
+        })
+    else {
+        return Ok(None); // degraded: no vec leg
+    };
+
+    // Best-effort cache write (single-writer thread); failures never fail
+    // the recall.
+    let bytes = blob(&vec);
+    let now = SystemClock.now_millis();
+    let _ = store
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO embeddings_cache
+                     (content_hash, embed_model, dim, vector, created_at, last_used_at, use_count)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1)
+                 ON CONFLICT(content_hash, embed_model)
+                 DO UPDATE SET last_used_at = ?5, use_count = use_count + 1",
+                rusqlite::params![hash, model, dim as i64, bytes, now],
+            )?;
+            Ok(())
+        })
+        .await;
+
+    Ok(Some(vec))
 }
 
 /// Comma-quoted SQL list, e.g. `('working','semantic')`.
@@ -218,12 +310,9 @@ pub async fn recall(
         return Err(Error::InvalidInput("recall query text is empty".into()));
     }
 
-    // Embed the query once. Failure degrades to keyword-only (D4), never a
-    // hard failure.
-    let query_vec: Option<Vec<f32>> = match embedder.embed(std::slice::from_ref(&q.text)).await {
-        Ok(mut v) if !v.is_empty() => Some(std::mem::take(&mut v[0])),
-        _ => None,
-    };
+    // Embed the query (cached in embeddings_cache; 0031 note). Failure
+    // degrades to keyword-only (D4), never a hard failure.
+    let query_vec = query_embedding(store, embedder, &q.text).await?;
     let degraded = query_vec.is_none();
 
     let (vec_hits, fts_hits) = run_legs(store, q, query_vec).await?;
