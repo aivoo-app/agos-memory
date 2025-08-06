@@ -1,10 +1,13 @@
-//! Reciprocal Rank Fusion (D27) of the vec and FTS legs, with a post-fuse
-//! re-check of the canonical rows (defense in depth; 0032 extracts this into
-//! the shared filter module).
+//! Reciprocal Rank Fusion (D27) of the vec and FTS legs.
+//!
+//! Both legs hand in candidates the hard filter already admitted; every vec
+//! candidate is additionally matched against the `CanonicalRow` the filter
+//! loaded for it, and the filter's Rust mirror ([`HardFilter::admits`]) is the
+//! gate that decides scoring — not the vec0 metadata, which can be stale.
 
 use std::collections::HashMap;
 
-use super::query::RecallQuery;
+use super::filter::{CanonicalRow, HardFilter};
 
 /// RRF constant (D27).
 pub(super) const RRF_K: f64 = 60.0;
@@ -48,52 +51,43 @@ pub struct RecallReport {
 /// A vec-leg hit before id resolution: (rowid, cosine distance).
 pub(super) type VecLegHit = (i64, f64);
 
-/// Canonical row data resolved for a vec hit: (public_id, tier, status, trust).
-pub(super) type CanonicalRow = (String, String, String, String);
-
 /// An FTS-leg hit before fusion: (public_id, tier, trust).
 pub(super) type FtsLegHit = (String, String, String);
 
 /// Fuse both legs' already-filtered candidates with RRF and return the top-k
 /// hits, best first.
 ///
-/// Every candidate is re-checked against the canonical `memories` row it must
-/// have: the vec leg's metadata filters can drift from the canonical row (a
-/// stale vec row), so the predicate is applied a second time on resolved data.
-/// Nothing may reach scoring that the canonical rows do not vouch for.
+/// `rows` holds the filter-loaded canonical row for each surviving vec rowid.
+/// A rowid absent from `rows` was either an orphaned vector or a row the filter
+/// rejected — it can never reach scoring.
 pub(super) fn fuse(
-    q: &RecallQuery,
+    filter: &HardFilter,
+    k: usize,
     vec_hits: &[VecLegHit],
     rows: &HashMap<i64, CanonicalRow>,
     fts_hits: &[FtsLegHit],
 ) -> Vec<RecallHit> {
-    let tiers = q.tiers();
-    let statuses = q.statuses();
-    let trusts = q.trusts();
-
     // public_id -> fused accumulator
     type Acc = (f64, Option<f64>, Option<usize>, String, String);
     let mut acc: HashMap<String, Acc> = HashMap::new();
 
     // Vec leg: rank is the KNN order (best first).
     for (rank, (rowid, distance)) in vec_hits.iter().enumerate() {
-        let Some((public_id, tier, status, trust)) = rows.get(rowid) else {
-            continue; // orphaned vector: no canonical row, never surface it
+        let Some(row) = rows.get(rowid) else {
+            continue; // orphaned vector, or rejected by the hard filter
         };
-        if !tiers.contains(&tier.as_str())
-            || !statuses.contains(&status.as_str())
-            || !trusts.contains(&trust.as_str())
-        {
-            continue; // stale vec metadata: the canonical row vetoes it
+        if !filter.admits(row) {
+            continue; // stale vec0 metadata: the canonical row vetoes it
         }
         let entry = acc
-            .entry(public_id.clone())
-            .or_insert_with(|| (0.0, None, None, tier.clone(), trust.clone()));
+            .entry(row.public_id.clone())
+            .or_insert_with(|| (0.0, None, None, row.tier.clone(), row.trust.clone()));
         entry.0 += 1.0 / (RRF_K + rank as f64 + 1.0);
         entry.1 = Some(1.0 - *distance); // cosine distance -> similarity
     }
 
-    // FTS leg: rank is the BM25 order (best first).
+    // FTS leg: rank is the BM25 order (best first). These rows already passed
+    // the predicate inside the SQL join.
     for (rank, (public_id, tier, trust)) in fts_hits.iter().enumerate() {
         let entry = acc
             .entry(public_id.clone())
@@ -124,6 +118,6 @@ pub(super) fn fuse(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.public_id.cmp(&b.public_id)) // deterministic ties
     });
-    hits.truncate(q.k);
+    hits.truncate(k);
     hits
 }

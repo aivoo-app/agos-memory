@@ -32,30 +32,8 @@ impl RecallQuery {
             trust_policy: cfg.trust_policy.clone(),
         }
     }
-
-    /// Tier allowlist for this query (D26: episodic opt-in).
-    pub(crate) fn tiers(&self) -> &'static [&'static str] {
-        if self.include_episodic {
-            &["working", "episodic", "semantic", "procedural"]
-        } else {
-            &["working", "semantic", "procedural"]
-        }
-    }
-
-    /// Trust allowlist for this query (D29).
-    pub(crate) fn trusts(&self) -> &'static [&'static str] {
-        match self.trust_policy {
-            TrustPolicy::Strict => &["trusted", "system"],
-            TrustPolicy::Fenced => &["trusted", "system", "untrusted"],
-        }
-    }
-
-    /// Status allowlist for this query (D28: pending opt-in).
-    pub(crate) fn statuses(&self) -> &'static [&'static str] {
-        if self.include_pending {
-            &["active", "pending"]
-        } else {
-            &["active"]
-        }
-    }
 }
+
+// Eligible tiers/statuses/trusts live in `crate::recall::filter`, which is the
+// single source of truth for hard-filter membership — deliberately not
+// duplicated here.

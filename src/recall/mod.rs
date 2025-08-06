@@ -25,18 +25,13 @@ use crate::util::clock::Clock;
 
 use rusqlite::OptionalExtension;
 
-/// Vec0 metadata code for `status` (CHECK order in the schema).
-const STATUS_ACTIVE: i64 = 0;
-const STATUS_PENDING: i64 = 1;
-
-/// Vec0 metadata code for `trust` (CHECK order in the schema).
-const TRUST_TRUSTED: i64 = 0;
-const TRUST_UNTRUSTED: i64 = 1;
-const TRUST_SYSTEM: i64 = 2;
-
+mod filter;
 mod fuse;
 mod query;
 
+use filter::{load_by_rowids, surviving_public_ids};
+
+pub use filter::{CanonicalRow, HardFilter};
 pub use fuse::{RecallComponents, RecallHit, RecallReport};
 pub use query::RecallQuery;
 
@@ -145,72 +140,38 @@ async fn query_embedding(
     Ok(Some(vec))
 }
 
-/// Comma-quoted SQL list, e.g. `('working','semantic')`.
-fn sql_list(items: &[&str]) -> String {
-    items
-        .iter()
-        .map(|s| format!("'{s}'"))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
 /// A vec-leg hit before id resolution: (rowid, cosine distance).
 type VecLegHit = (i64, f64);
 
 /// An FTS-leg hit before fusion: (public_id, tier, trust).
 type FtsLegHit = (String, String, String);
 
-/// Run the two retrieval legs on one pooled read connection.
+/// Run both legs on one pooled read connection, each leg gated by the *same*
+/// hard filter (D6/D29 — filters run inside the legs, before scoring).
 ///
-/// Returns vec hits as raw rowids (resolved to canonical rows afterwards) and
-/// FTS hits with their canonical metadata, both already predicate-filtered.
+/// Vec hits come back as raw rowids (resolved and re-gated afterwards); FTS hits
+/// come back with their canonical metadata, already predicate-filtered.
 async fn run_legs(
     store: &StoreHandle,
-    q: &RecallQuery,
+    filter: &HardFilter,
+    text: String,
+    k: usize,
     query_vec: Option<Vec<f32>>,
 ) -> Result<(Vec<VecLegHit>, Vec<FtsLegHit>)> {
-    let agent_id = store.agent_id().to_string();
-    let text = q.text.clone();
-    let tiers = q.tiers();
-    let statuses = q.statuses();
-    let trusts = q.trusts();
-    let now = SystemClock.now_millis();
-    let k = q.k;
+    let vec_predicate = filter.vec_metadata_predicate();
+    let predicate = filter.predicate("m");
 
     store
         .read(move |conn| {
-            // ---- Vector leg: hard filters INSIDE the KNN scan (0031 step 1).
-            // Untrusted/dead/other-tier vectors never occupy top-k slots.
+            // ---- Vector leg: the metadata subset of the predicate is pushed
+            // INSIDE the KNN scan, so disqualified vectors never occupy top-k
+            // slots (agent/expiry/supersede are enforced after the scan).
             let mut vec_hits: Vec<VecLegHit> = Vec::new();
             if let Some(vec) = query_vec {
-                let trust_codes = trusts
-                    .iter()
-                    .map(|t| match *t {
-                        "trusted" => TRUST_TRUSTED,
-                        "untrusted" => TRUST_UNTRUSTED,
-                        "system" => TRUST_SYSTEM,
-                        other => unreachable!("unknown trust {other} in allowlist"),
-                    })
-                    .map(|c| c.to_string())
-                    .collect::<Vec<String>>()
-                    .join(",");
-                let status_codes = statuses
-                    .iter()
-                    .map(|s| match *s {
-                        "active" => STATUS_ACTIVE,
-                        "pending" => STATUS_PENDING,
-                        other => unreachable!("unknown status {other} in allowlist"),
-                    })
-                    .map(|c| c.to_string())
-                    .collect::<Vec<String>>()
-                    .join(",");
-                let tier_list = sql_list(tiers);
                 let sql = format!(
                     "SELECT rowid, distance FROM vec_memories
                      WHERE embedding MATCH ?1 AND k = {k}
-                       AND tier IN ({tier_list})
-                       AND status IN ({status_codes})
-                       AND trust IN ({trust_codes})"
+                       AND {vec_predicate}"
                 );
                 let mut stmt = conn.prepare(&sql)?;
                 let rows = stmt.query_map(rusqlite::params![blob(&vec)], |r| {
@@ -221,25 +182,17 @@ async fn run_legs(
                 }
             }
 
-            // ---- Keyword leg: FTS5 joined to memories for the predicate
-            // (0031 step 2 — fts_memories has no trust/status columns).
-            let tier_list = sql_list(tiers);
-            let status_list = sql_list(statuses);
-            let trust_list = sql_list(trusts);
+            // ---- Keyword leg: FTS5 carries no trust/status columns, so it is
+            // joined to `memories` and gated by the canonical predicate.
             let fts_sql = format!(
                 "SELECT m.public_id, m.tier, m.trust FROM fts_memories
                  JOIN memories m ON m.id = fts_memories.rowid
-                 WHERE fts_memories MATCH ?1
-                   AND m.agent_id = ?2
-                   AND m.tier IN ({tier_list})
-                   AND m.status IN ({status_list})
-                   AND m.trust IN ({trust_list})
-                   AND (m.expires_at IS NULL OR m.expires_at > ?3)
+                 WHERE fts_memories MATCH ?1 AND {predicate}
                  LIMIT {k}"
             );
             let mut stmt = conn.prepare(&fts_sql)?;
             let expr = fts_match_expr(&text);
-            let rows = stmt.query_map(rusqlite::params![expr, agent_id, now], |r| {
+            let rows = stmt.query_map(rusqlite::params![expr], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
@@ -255,50 +208,7 @@ async fn run_legs(
         .await
 }
 
-/// Resolve vec rowids to canonical rows in one small lookup.
-///
-/// Returns `rowid -> (public_id, tier, status, trust)`. Orphaned rowids
-/// (a vector without a canonical row) are simply absent from the map and get
-/// dropped during fusion — they must never surface.
-async fn resolve_vec_rows(
-    store: &StoreHandle,
-    rowids: &[i64],
-) -> Result<std::collections::HashMap<i64, (String, String, String, String)>> {
-    if rowids.is_empty() {
-        return Ok(std::collections::HashMap::new());
-    }
-    let list = rowids
-        .iter()
-        .map(|i| i.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    store
-        .read(move |conn| {
-            let sql = format!(
-                "SELECT id, public_id, tier, status, trust FROM memories
-                 WHERE id IN ({list})"
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
-                ))
-            })?;
-            let mut map = std::collections::HashMap::new();
-            for row in rows {
-                let (id, public_id, tier, status, trust) = row?;
-                map.insert(id, (public_id, tier, status, trust));
-            }
-            Ok(map)
-        })
-        .await
-}
-
-/// Run one hybrid recall: embed → vec KNN + FTS5 → RRF fuse → re-filter.
+/// Run one hybrid recall: filter → embed → vec KNN + FTS5 → RRF fuse → re-gate.
 pub async fn recall(
     store: &StoreHandle,
     embedder: &dyn Embedder,
@@ -310,17 +220,31 @@ pub async fn recall(
         return Err(Error::InvalidInput("recall query text is empty".into()));
     }
 
+    // One filter for the whole call: same reference instant, same allowlists,
+    // in both legs and in every gate that follows (0032).
+    let filter = HardFilter::from_query(store.agent_id(), q, SystemClock.now_millis());
+
     // Embed the query (cached in embeddings_cache; 0031 note). Failure
     // degrades to keyword-only (D4), never a hard failure.
     let query_vec = query_embedding(store, embedder, &q.text).await?;
     let degraded = query_vec.is_none();
 
-    let (vec_hits, fts_hits) = run_legs(store, q, query_vec).await?;
+    let (vec_hits, fts_hits) = run_legs(store, &filter, q.text.clone(), q.k, query_vec).await?;
 
+    // Gate 2: resolve vec rowids to canonical rows the filter admits.
     let rowids: Vec<i64> = vec_hits.iter().map(|(id, _)| *id).collect();
-    let rows = resolve_vec_rows(store, &rowids).await?;
+    let rows = load_by_rowids(store, &filter, &rowids).await?;
 
-    let hits = fuse::fuse(q, &vec_hits, &rows, &fts_hits);
+    let fused = fuse::fuse(&filter, q.k, &vec_hits, &rows, &fts_hits);
+
+    // Gate 3: re-apply the filter to the fused id set (structural zero-leak
+    // guarantee — nothing unadmitted can survive fusion, whatever the legs did).
+    let fused_ids: Vec<String> = fused.iter().map(|h| h.public_id.clone()).collect();
+    let surviving = surviving_public_ids(store, &filter, &fused_ids).await?;
+    let hits: Vec<RecallHit> = fused
+        .into_iter()
+        .filter(|h| surviving.contains(&h.public_id))
+        .collect();
 
     Ok(RecallReport {
         hits,
