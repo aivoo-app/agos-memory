@@ -9,9 +9,9 @@
 //!   the same predicate (the FTS index carries no trust/status columns).
 //!
 //! Fusion is Reciprocal Rank Fusion (D27, k=60) — rank-based, so the two legs'
-//! scores never need calibrating. The merged id set is hard-filtered *again*
-//! against the canonical `memories` rows before returning (defense in depth;
-//! 0032 will extract that predicate into the shared filter module).
+//! scores never need calibrating. Hard-filter membership is defined once, in
+//! [`filter`] (0032); both legs inline its predicate, and the fused id set is
+//! re-gated against it afterwards (structural zero-leak guarantee).
 //!
 //! Degraded mode (D4): when the embedder refuses (no provider / ceiling), the
 //! vector leg is skipped, BM25-only results are returned, and
