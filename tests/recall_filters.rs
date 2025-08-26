@@ -338,7 +338,8 @@ async fn rust_selected(store: &StoreHandle, filter: &HardFilter) -> Vec<String> 
                 "SELECT m.id, m.public_id, m.agent_id, m.tier, m.status, m.trust,
                         m.expires_at, m.superseded_by_id,
                         (SELECT s.id FROM memories s WHERE s.supersedes_id = m.id LIMIT 1),
-                        m.created_at, m.last_referenced_at
+                        m.created_at, m.last_referenced_at,
+                        m.importance_current, m.confidence
                  FROM memories m",
             )?;
             let rows = stmt.query_map([], |r| {
@@ -354,6 +355,10 @@ async fn rust_selected(store: &StoreHandle, filter: &HardFilter) -> Vec<String> 
                     successor_id: r.get(8)?,
                     created_at: r.get(9)?,
                     last_referenced_at: r.get(10)?,
+                    // Not read by the predicate; the rerank terms (0033) are
+                    // proven separately in `tests/recall_rerank.rs`.
+                    importance_current: r.get(11)?,
+                    confidence: r.get(12)?,
                 })
             })?;
             let mut out = Vec::new();

@@ -87,7 +87,10 @@ fn trust_code(trust: &str) -> i64 {
 ///
 /// Every field the predicate reads is materialised here, so the Rust mirror
 /// [`HardFilter::admits`] needs no further queries.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Not `Eq`: `importance_current`/`confidence` are floats (and only `PartialEq`
+/// is ever needed — these rows are compared for test assertions, never hashed).
+#[derive(Debug, Clone, PartialEq)]
 pub struct CanonicalRow {
     /// `memories.id` (equals the `vec_memories` rowid).
     pub rowid: i64,
@@ -111,18 +114,23 @@ pub struct CanonicalRow {
     pub created_at: i64,
     /// Last reference time (millis), `None` = never referenced.
     pub last_referenced_at: Option<i64>,
+    /// Current importance in `[0,1]` — the rerank importance term (D23).
+    pub importance_current: f64,
+    /// Extraction confidence in `[0,1]` — multiplies importance for `pending`
+    /// items only (D25/D28).
+    pub confidence: f64,
 }
 
 /// Columns [`CanonicalRow`] is built from, prefixed for alias `m`. The
 /// correlated subquery materialises the supersede hardening signal, so the
 /// Rust mirror sees exactly what SQL sees.
-const CANONICAL_COLUMNS: &str = "m.id, m.public_id, m.agent_id, m.tier, m.status, \
+pub(super) const CANONICAL_COLUMNS: &str = "m.id, m.public_id, m.agent_id, m.tier, m.status, \
      m.trust, m.expires_at, m.superseded_by_id, \
      (SELECT s.id FROM memories s WHERE s.supersedes_id = m.id LIMIT 1), \
-     m.created_at, m.last_referenced_at";
+     m.created_at, m.last_referenced_at, m.importance_current, m.confidence";
 
 /// Map one [`CANONICAL_COLUMNS`] row, in order.
-fn row_from_sql(r: &rusqlite::Row<'_>) -> rusqlite::Result<CanonicalRow> {
+pub(super) fn row_from_sql(r: &rusqlite::Row<'_>) -> rusqlite::Result<CanonicalRow> {
     Ok(CanonicalRow {
         rowid: r.get(0)?,
         public_id: r.get(1)?,
@@ -135,6 +143,8 @@ fn row_from_sql(r: &rusqlite::Row<'_>) -> rusqlite::Result<CanonicalRow> {
         successor_id: r.get(8)?,
         created_at: r.get(9)?,
         last_referenced_at: r.get(10)?,
+        importance_current: r.get(11)?,
+        confidence: r.get(12)?,
     })
 }
 
@@ -189,6 +199,14 @@ impl HardFilter {
             trusts: eligible_trusts(&q.trust_policy),
             now,
         }
+    }
+
+    /// Reference instant this filter was evaluated at (millis).
+    ///
+    /// Rerank (0033) threads this into the decay term so the instant used for
+    /// expiry and the instant used for decay are provably the same one.
+    pub fn now(&self) -> i64 {
+        self.now
     }
 
     /// The canonical predicate over alias `alias` of the `memories` table.

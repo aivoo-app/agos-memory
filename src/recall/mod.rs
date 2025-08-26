@@ -13,6 +13,10 @@
 //! [`filter`] (0032); both legs inline its predicate, and the fused id set is
 //! re-gated against it afterwards (structural zero-leak guarantee).
 //!
+//! Rerank (0033) then rescores the fused pool with the D23 blend of normalized
+//! rank, importance and per-tier decay (D24), and the final `top_k` is cut from
+//! *that* order — fusion alone never decides the cut.
+//!
 //! Degraded mode (D4): when the embedder refuses (no provider / ceiling), the
 //! vector leg is skipped, BM25-only results are returned, and
 //! [`RecallReport::degraded`] is set — never a hard failure.
@@ -28,12 +32,16 @@ use rusqlite::OptionalExtension;
 mod filter;
 mod fuse;
 mod query;
+mod rerank;
 
 use filter::{load_by_rowids, surviving_public_ids};
+use fuse::{FtsLegHit, VecLegHit};
+use rerank::RERANK_POOL_FACTOR;
 
 pub use filter::{CanonicalRow, HardFilter};
 pub use fuse::{RecallComponents, RecallHit, RecallReport};
 pub use query::RecallQuery;
+pub use rerank::{decay, half_life_minutes};
 
 /// FTS5 MATCH expression for the free-text query: bare terms ANDed, so every
 /// word must appear somewhere in the document. The vec leg catches
@@ -140,22 +148,17 @@ async fn query_embedding(
     Ok(Some(vec))
 }
 
-/// A vec-leg hit before id resolution: (rowid, cosine distance).
-type VecLegHit = (i64, f64);
-
-/// An FTS-leg hit before fusion: (public_id, tier, trust).
-type FtsLegHit = (String, String, String);
-
 /// Run both legs on one pooled read connection, each leg gated by the *same*
 /// hard filter (D6/D29 — filters run inside the legs, before scoring).
 ///
-/// Vec hits come back as raw rowids (resolved and re-gated afterwards); FTS hits
-/// come back with their canonical metadata, already predicate-filtered.
+/// Both legs retrieve `pool` candidates and return rowids; the canonical rows
+/// behind those rowids are loaded (and re-gated) by the caller, so the vec leg's
+/// raw rowids and the FTS leg's join result end up verified the same way.
 async fn run_legs(
     store: &StoreHandle,
     filter: &HardFilter,
     text: String,
-    k: usize,
+    pool: usize,
     query_vec: Option<Vec<f32>>,
 ) -> Result<(Vec<VecLegHit>, Vec<FtsLegHit>)> {
     let vec_predicate = filter.vec_metadata_predicate();
@@ -164,13 +167,13 @@ async fn run_legs(
     store
         .read(move |conn| {
             // ---- Vector leg: the metadata subset of the predicate is pushed
-            // INSIDE the KNN scan, so disqualified vectors never occupy top-k
+            // INSIDE the KNN scan, so disqualified vectors never occupy pool
             // slots (agent/expiry/supersede are enforced after the scan).
             let mut vec_hits: Vec<VecLegHit> = Vec::new();
             if let Some(vec) = query_vec {
                 let sql = format!(
                     "SELECT rowid, distance FROM vec_memories
-                     WHERE embedding MATCH ?1 AND k = {k}
+                     WHERE embedding MATCH ?1 AND k = {pool}
                        AND {vec_predicate}"
                 );
                 let mut stmt = conn.prepare(&sql)?;
@@ -185,18 +188,19 @@ async fn run_legs(
             // ---- Keyword leg: FTS5 carries no trust/status columns, so it is
             // joined to `memories` and gated by the canonical predicate.
             let fts_sql = format!(
-                "SELECT m.public_id, m.tier, m.trust FROM fts_memories
+                "SELECT m.id, m.public_id, m.tier, m.trust FROM fts_memories
                  JOIN memories m ON m.id = fts_memories.rowid
                  WHERE fts_memories MATCH ?1 AND {predicate}
-                 LIMIT {k}"
+                 LIMIT {pool}"
             );
             let mut stmt = conn.prepare(&fts_sql)?;
             let expr = fts_match_expr(&text);
             let rows = stmt.query_map(rusqlite::params![expr], |r| {
                 Ok((
-                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
                 ))
             })?;
             let mut fts_hits: Vec<FtsLegHit> = Vec::new();
@@ -229,22 +233,39 @@ pub async fn recall(
     let query_vec = query_embedding(store, embedder, &q.text).await?;
     let degraded = query_vec.is_none();
 
-    let (vec_hits, fts_hits) = run_legs(store, &filter, q.text.clone(), q.k, query_vec).await?;
+    // Each leg retrieves `top_k × RERANK_POOL_FACTOR` candidates: rerank
+    // reorders by a different score than RRF, so a candidate the legs rank
+    // 20th can still earn a top slot — it would be unreachable if the legs
+    // stopped at `top_k`. The cut to `top_k` happens after rerank (0033).
+    let pool = q.k.max(1).saturating_mul(RERANK_POOL_FACTOR);
+    let (vec_hits, fts_hits) = run_legs(store, &filter, q.text.clone(), pool, query_vec).await?;
 
-    // Gate 2: resolve vec rowids to canonical rows the filter admits.
-    let rowids: Vec<i64> = vec_hits.iter().map(|(id, _)| *id).collect();
+    // Gate 2: resolve *both* legs' rowids to canonical rows the filter admits.
+    // Union, not just the vec leg: an FTS-only hit has no vec rowid, and
+    // fusion drops any candidate it cannot verify against a canonical row.
+    let mut rowids: Vec<i64> = vec_hits.iter().map(|(id, _)| *id).collect();
+    rowids.extend(fts_hits.iter().map(|(id, _, _, _)| *id));
+    rowids.sort_unstable();
+    rowids.dedup();
     let rows = load_by_rowids(store, &filter, &rowids).await?;
 
-    let fused = fuse::fuse(&filter, q.k, &vec_hits, &rows, &fts_hits);
+    let fused = fuse::fuse(&filter, &vec_hits, &rows, &fts_hits);
 
     // Gate 3: re-apply the filter to the fused id set (structural zero-leak
     // guarantee — nothing unadmitted can survive fusion, whatever the legs did).
     let fused_ids: Vec<String> = fused.iter().map(|h| h.public_id.clone()).collect();
     let surviving = surviving_public_ids(store, &filter, &fused_ids).await?;
-    let hits: Vec<RecallHit> = fused
+    let admitted: Vec<RecallHit> = fused
         .into_iter()
         .filter(|h| surviving.contains(&h.public_id))
         .collect();
+
+    // Rerank (D23/D24), then cut: the `top_k` and `min_score` cuts must apply
+    // to the *reranked* order, and the score cut may legitimately return fewer
+    // than `k` hits (D26 — "report no hit" instead of a weak hit).
+    let mut hits = rerank::rerank(&q.weights, &q.half_life, filter.now(), admitted, &rows);
+    hits.truncate(q.k);
+    hits.retain(|h| h.score >= q.min_score);
 
     Ok(RecallReport {
         hits,
