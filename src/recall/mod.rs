@@ -26,11 +26,13 @@ use crate::error::{Error, Result};
 use crate::storage::StoreHandle;
 use crate::util::SystemClock;
 use crate::util::clock::Clock;
+use crate::util::tokens::HeuristicCounter;
 
 use rusqlite::OptionalExtension;
 
 mod filter;
 mod fuse;
+mod pack;
 mod query;
 mod rerank;
 
@@ -39,7 +41,8 @@ use fuse::{FtsLegHit, VecLegHit};
 use rerank::RERANK_POOL_FACTOR;
 
 pub use filter::{CanonicalRow, HardFilter};
-pub use fuse::{RecallComponents, RecallHit, RecallReport};
+pub use fuse::{DropReason, Placement, RecallComponents, RecallHit, RecallReport};
+pub use pack::TierTokens;
 pub use query::RecallQuery;
 pub use rerank::{decay, half_life_minutes};
 
@@ -267,8 +270,21 @@ pub async fn recall(
     hits.truncate(q.k);
     hits.retain(|h| h.score >= q.min_score);
 
-    Ok(RecallReport {
+    // Pack into the token budget (D25). This also fixes the report's order —
+    // injection order, pinned first — and the `tokens_used <= budget_tokens`
+    // guarantee the caller relies on.
+    let packed = pack::pack(
+        &q.budget_split,
+        q.budget_tokens,
         hits,
+        &rows,
+        &HeuristicCounter::new(),
+    );
+
+    Ok(RecallReport {
+        hits: packed.hits,
+        tokens_used: packed.tokens_used,
+        tier_tokens: packed.tier_tokens,
         degraded,
         latency_ms: started.elapsed().as_millis() as u64,
     })

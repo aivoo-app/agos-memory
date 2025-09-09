@@ -86,7 +86,11 @@ fn trust_code(trust: &str) -> i64 {
 /// A resolved `memories` row plus the two DB-derived supersede signals.
 ///
 /// Every field the predicate reads is materialised here, so the Rust mirror
-/// [`HardFilter::admits`] needs no further queries.
+/// [`HardFilter::admits`] needs no further queries. The struct also carries what
+/// the *scoring* stage (0033) and the *packing* stage (0034) need — rerank's
+/// `importance_current`/`confidence`, and packing's `pinned`/`text`/`summary_*` —
+/// so the whole pipeline reads one row per candidate instead of re-querying.
+/// Text is loaded for at most the candidate pool (`top_k × 4`), never the store.
 ///
 /// Not `Eq`: `importance_current`/`confidence` are floats (and only `PartialEq`
 /// is ever needed — these rows are compared for test assertions, never hashed).
@@ -119,6 +123,17 @@ pub struct CanonicalRow {
     /// Extraction confidence in `[0,1]` — multiplies importance for `pending`
     /// items only (D25/D28).
     pub confidence: f64,
+    /// Pinned rows are injected before anything else and are not bound by their
+    /// tier's share (D25).
+    pub pinned: bool,
+    /// Full memory text — what packing places (D25).
+    pub text: String,
+    /// Pre-computed summary text, the summary-swap fallback when the full text
+    /// does not fit (D25).
+    pub summary_text: Option<String>,
+    /// Token count of [`Self::summary_text`] as recorded by the writer; `None`
+    /// or `<= 0` means no summary was counted.
+    pub summary_tokens: Option<i64>,
 }
 
 /// Columns [`CanonicalRow`] is built from, prefixed for alias `m`. The
@@ -127,7 +142,8 @@ pub struct CanonicalRow {
 pub(super) const CANONICAL_COLUMNS: &str = "m.id, m.public_id, m.agent_id, m.tier, m.status, \
      m.trust, m.expires_at, m.superseded_by_id, \
      (SELECT s.id FROM memories s WHERE s.supersedes_id = m.id LIMIT 1), \
-     m.created_at, m.last_referenced_at, m.importance_current, m.confidence";
+     m.created_at, m.last_referenced_at, m.importance_current, m.confidence, \
+     m.pinned, m.text, m.summary_text, m.summary_tokens";
 
 /// Map one [`CANONICAL_COLUMNS`] row, in order.
 pub(super) fn row_from_sql(r: &rusqlite::Row<'_>) -> rusqlite::Result<CanonicalRow> {
@@ -145,6 +161,10 @@ pub(super) fn row_from_sql(r: &rusqlite::Row<'_>) -> rusqlite::Result<CanonicalR
         last_referenced_at: r.get(10)?,
         importance_current: r.get(11)?,
         confidence: r.get(12)?,
+        pinned: r.get(13)?,
+        text: r.get(14)?,
+        summary_text: r.get(15)?,
+        summary_tokens: r.get(16)?,
     })
 }
 

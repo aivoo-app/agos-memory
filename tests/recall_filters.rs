@@ -359,6 +359,11 @@ async fn rust_selected(store: &StoreHandle, filter: &HardFilter) -> Vec<String> 
                     // proven separately in `tests/recall_rerank.rs`.
                     importance_current: r.get(11)?,
                     confidence: r.get(12)?,
+                    // Packing inputs (0034): not read by SQL or the mirror.
+                    pinned: false,
+                    text: String::new(),
+                    summary_text: None,
+                    summary_tokens: None,
                 })
             })?;
             let mut out = Vec::new();

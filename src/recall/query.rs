@@ -1,6 +1,6 @@
 //! Query parameters for one recall call (defaults from `[recall]` config).
 
-use crate::config::{RecallConfig, RecallHalfLives, RecallWeights, TrustPolicy};
+use crate::config::{BudgetSplit, RecallConfig, RecallHalfLives, RecallWeights, TrustPolicy};
 
 /// One recall request (D23/D26/D28/D29 defaults live in [`RecallConfig`]).
 #[derive(Debug, Clone, PartialEq)]
@@ -24,6 +24,8 @@ pub struct RecallQuery {
     pub weights: RecallWeights,
     /// Per-tier decay half-lives (D24).
     pub half_life: RecallHalfLives,
+    /// Tier share of the token budget, with rollover in declared order (D25).
+    pub budget_split: BudgetSplit,
 }
 
 impl RecallQuery {
@@ -39,6 +41,7 @@ impl RecallQuery {
             min_score: f64::from(cfg.min_score),
             weights: cfg.weights.clone(),
             half_life: cfg.half_life.clone(),
+            budget_split: cfg.budget_split.clone(),
         }
     }
 }
