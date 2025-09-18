@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 
 use super::filter::{CanonicalRow, HardFilter};
+use super::pack::TierTokens;
 
 /// RRF constant (D27).
 pub(super) const RRF_K: f64 = 60.0;
@@ -49,6 +50,34 @@ pub struct RecallComponents {
     pub decay: f64,
 }
 
+/// Why a candidate was not injected (D25: whole-item drop only, never a
+/// truncated fragment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropReason {
+    /// The item's tier share (plus any rollover it received) was too small.
+    TierBudget,
+    /// The overall `budget_tokens` ceiling was reached.
+    TotalBudget,
+    /// The candidate had no canonical row, so its text was unreadable. Rerank
+    /// drops such hits, so this marks an invariant violation rather than a
+    /// normal outcome — it fails closed.
+    Unresolved,
+}
+
+/// What packing did with one candidate (D25).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Placement {
+    /// Not packed yet; [`fuse`]/[`super::rerank`] leave this in place.
+    #[default]
+    Unpacked,
+    /// The full `text` was placed.
+    Full,
+    /// The `summary_text` was placed instead of the full text (summary-swap).
+    Summary,
+    /// The item was dropped whole, for the given reason.
+    Dropped(DropReason),
+}
+
 /// One candidate hit, post-fusion.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecallHit {
@@ -62,15 +91,44 @@ pub struct RecallHit {
     pub trust: String,
     /// Final rerank score (D23); `0.0` until [`super::rerank`] runs.
     pub score: f64,
+    /// What packing did with this hit; [`Placement::Unpacked`] until
+    /// [`super::pack`] runs.
+    pub placement: Placement,
+    /// Tokens this hit contributes to the context: the full text, the summary,
+    /// or `0` when it was dropped.
+    pub tokens: u64,
     /// Score components for rerank + explain.
     pub components: RecallComponents,
+}
+
+impl RecallHit {
+    /// True when this hit was placed into the context (full text or summary).
+    ///
+    /// This is the `injected` flag of the render/audit contract (0035/0036) —
+    /// derived rather than stored, so [`Placement`] stays the single source of
+    /// truth for what happened to a candidate.
+    pub fn injected(&self) -> bool {
+        matches!(self.placement, Placement::Full | Placement::Summary)
+    }
+
+    /// True when the summary was injected instead of the full text (D25).
+    pub fn is_summary(&self) -> bool {
+        matches!(self.placement, Placement::Summary)
+    }
 }
 
 /// Outcome of one recall call.
 #[derive(Debug, Clone)]
 pub struct RecallReport {
-    /// Hits, best first by final score (D23).
+    /// Hits in *injection* order: pinned first, then by final score (packing,
+    /// D25). Dropped candidates are kept (with [`Placement::Dropped`]) so
+    /// explain and the audit trail can show what was considered and why it was
+    /// left out (0035/0036).
     pub hits: Vec<RecallHit>,
+    /// Tokens placed in total; guaranteed `<= budget_tokens` (D25).
+    pub tokens_used: u64,
+    /// Tokens placed per tier, in declared tier order (D25).
+    pub tier_tokens: TierTokens,
     /// True when the vec leg was skipped (embedder unavailable) and the
     /// result is BM25-only.
     pub degraded: bool,
@@ -136,7 +194,9 @@ pub(super) fn fuse(
                 public_id: row.public_id.clone(),
                 tier: row.tier.clone(),
                 trust: row.trust.clone(),
-                score: 0.0, // set by rerank (0033)
+                score: 0.0,                     // set by rerank (0033)
+                placement: Placement::Unpacked, // set by pack (0034)
+                tokens: 0,                      // set by pack (0034)
                 components: RecallComponents {
                     sim,
                     bm25_rank,
