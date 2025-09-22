@@ -128,6 +128,10 @@ pub struct CanonicalRow {
     pub pinned: bool,
     /// Full memory text — what packing places (D25).
     pub text: String,
+    /// Provenance kind (`user|agent|tool|file|web|import`) — citation output.
+    pub source_kind: String,
+    /// Provenance reference (path, url, …) — citation output.
+    pub source_ref: Option<String>,
     /// Pre-computed summary text, the summary-swap fallback when the full text
     /// does not fit (D25).
     pub summary_text: Option<String>,
@@ -143,7 +147,8 @@ pub(super) const CANONICAL_COLUMNS: &str = "m.id, m.public_id, m.agent_id, m.tie
      m.trust, m.expires_at, m.superseded_by_id, \
      (SELECT s.id FROM memories s WHERE s.supersedes_id = m.id LIMIT 1), \
      m.created_at, m.last_referenced_at, m.importance_current, m.confidence, \
-     m.pinned, m.text, m.summary_text, m.summary_tokens";
+     m.pinned, m.text, m.summary_text, m.summary_tokens, \
+     m.source_kind, m.source_ref";
 
 /// Map one [`CANONICAL_COLUMNS`] row, in order.
 pub(super) fn row_from_sql(r: &rusqlite::Row<'_>) -> rusqlite::Result<CanonicalRow> {
@@ -165,6 +170,8 @@ pub(super) fn row_from_sql(r: &rusqlite::Row<'_>) -> rusqlite::Result<CanonicalR
         text: r.get(14)?,
         summary_text: r.get(15)?,
         summary_tokens: r.get(16)?,
+        source_kind: r.get(17)?,
+        source_ref: r.get(18)?,
     })
 }
 

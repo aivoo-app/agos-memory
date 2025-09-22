@@ -97,6 +97,10 @@ pub struct RecallHit {
     /// Tokens this hit contributes to the context: the full text, the summary,
     /// or `0` when it was dropped.
     pub tokens: u64,
+    /// Provenance kind of the canonical row — citation output (0035).
+    pub source_kind: String,
+    /// Provenance reference of the canonical row — citation output (0035).
+    pub source_ref: Option<String>,
     /// Score components for rerank + explain.
     pub components: RecallComponents,
 }
@@ -118,7 +122,7 @@ impl RecallHit {
 }
 
 /// Outcome of one recall call.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RecallReport {
     /// Hits in *injection* order: pinned first, then by final score (packing,
     /// D25). Dropped candidates are kept (with [`Placement::Dropped`]) so
@@ -129,6 +133,9 @@ pub struct RecallReport {
     pub tokens_used: u64,
     /// Tokens placed per tier, in declared tier order (D25).
     pub tier_tokens: TierTokens,
+    /// True when nothing scored at or above `min_score` (D26): the caller gets
+    /// an empty injection rather than a weak hit. Recall never panics on this.
+    pub no_hit: bool,
     /// True when the vec leg was skipped (embedder unavailable) and the
     /// result is BM25-only.
     pub degraded: bool,
@@ -197,6 +204,8 @@ pub(super) fn fuse(
                 score: 0.0,                     // set by rerank (0033)
                 placement: Placement::Unpacked, // set by pack (0034)
                 tokens: 0,                      // set by pack (0034)
+                source_kind: row.source_kind.clone(),
+                source_ref: row.source_ref.clone(),
                 components: RecallComponents {
                     sim,
                     bm25_rank,

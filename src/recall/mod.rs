@@ -30,6 +30,7 @@ use crate::util::tokens::HeuristicCounter;
 
 use rusqlite::OptionalExtension;
 
+mod explain;
 mod filter;
 mod fuse;
 mod pack;
@@ -40,6 +41,7 @@ use filter::{load_by_rowids, surviving_public_ids};
 use fuse::{FtsLegHit, VecLegHit};
 use rerank::RERANK_POOL_FACTOR;
 
+pub use explain::{MemoryExplain, RecallItem, explain, render_no_hit, render_report, why};
 pub use filter::{CanonicalRow, HardFilter};
 pub use fuse::{DropReason, Placement, RecallComponents, RecallHit, RecallReport};
 pub use pack::TierTokens;
@@ -281,10 +283,16 @@ pub async fn recall(
         &HeuristicCounter::new(),
     );
 
+    let no_hit = packed.hits.iter().all(|h| !h.injected());
+
     Ok(RecallReport {
         hits: packed.hits,
         tokens_used: packed.tokens_used,
         tier_tokens: packed.tier_tokens,
+        // D26: nothing placed (all cut by `min_score`/`top_k` or dropped by
+        // packing) is a *no-hit* — the caller decides what to do, never a
+        // panic.
+        no_hit,
         degraded,
         latency_ms: started.elapsed().as_millis() as u64,
     })

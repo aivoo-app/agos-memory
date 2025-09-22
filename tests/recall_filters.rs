@@ -364,6 +364,9 @@ async fn rust_selected(store: &StoreHandle, filter: &HardFilter) -> Vec<String> 
                     text: String::new(),
                     summary_text: None,
                     summary_tokens: None,
+                    // Provenance (0035): not read by the predicate or packing.
+                    source_kind: "user".into(),
+                    source_ref: None,
                 })
             })?;
             let mut out = Vec::new();
