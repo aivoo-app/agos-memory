@@ -269,6 +269,9 @@ pub async fn recall(
     // to the *reranked* order, and the score cut may legitimately return fewer
     // than `k` hits (D26 — "report no hit" instead of a weak hit).
     let mut hits = rerank::rerank(&q.weights, &q.half_life, filter.now(), admitted, &rows);
+    // Candidates that survived rerank (before packing truncation/drop). Recorded
+    // for the audit trail (0036).
+    let reranked_count = hits.len();
     hits.truncate(q.k);
     hits.retain(|h| h.score >= q.min_score);
 
@@ -285,7 +288,8 @@ pub async fn recall(
 
     let no_hit = packed.hits.iter().all(|h| !h.injected());
 
-    Ok(RecallReport {
+    let now_ms = crate::util::SystemClock.now_millis();
+    let report = RecallReport {
         hits: packed.hits,
         tokens_used: packed.tokens_used,
         tier_tokens: packed.tier_tokens,
@@ -295,5 +299,22 @@ pub async fn recall(
         no_hit,
         degraded,
         latency_ms: started.elapsed().as_millis() as u64,
-    })
+    };
+
+    // 0036: write the audit trail (best-effort — never fails the recall).
+    let audit = crate::storage::audit::RecallAuditInput {
+        query_text: &q.text,
+        k: q.k,
+        budget: q.budget_tokens,
+        candidates: reranked_count,
+        session_id: None,
+        degraded,
+    };
+    match store.write_recall_audit(&report, &audit, now_ms).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {}
+        Err(e) => tracing::warn!("audit write failed: {e}"),
+    }
+
+    Ok(report)
 }

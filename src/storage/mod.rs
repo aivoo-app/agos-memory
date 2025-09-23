@@ -8,12 +8,14 @@
 //! - **Read pool**: N read-only connections handed out round-robin.
 //! - SQLite in WAL mode allows concurrent readers with the single writer.
 
+pub mod audit;
 pub mod pool;
 pub mod schema;
 pub mod store;
 pub mod vecext;
 pub mod writer;
 
+pub use audit::{RecallAuditInput, RecallAuditOut};
 pub use pool::ReadPool;
 pub use store::{MemoryRow, NewMemory, SnapshotReport, Store, StoreHandle};
 pub use writer::WriterHandle;

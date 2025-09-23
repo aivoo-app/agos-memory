@@ -41,7 +41,7 @@ use super::fuse::{DropReason, Placement, RecallHit};
 pub(super) const TIER_ORDER: [&str; 4] = ["working", "episodic", "semantic", "procedural"];
 
 /// Tokens placed per tier.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct TierTokens {
     /// Tokens placed from the `working` tier.
     pub working: u64,

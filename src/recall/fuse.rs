@@ -30,7 +30,7 @@ pub(super) const RRF_K: f64 = 60.0;
 /// rerank terms (`sim_norm`, `importance`, `confidence`, `decay`) are filled by
 /// [`super::rerank`]. Both live here so explain (0035) can print a hit's full
 /// provenance without re-deriving anything.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct RecallComponents {
     /// Cosine similarity from the vec leg (`None` when not a vec hit).
     pub sim: Option<f64>,
@@ -52,7 +52,7 @@ pub struct RecallComponents {
 
 /// Why a candidate was not injected (D25: whole-item drop only, never a
 /// truncated fragment).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum DropReason {
     /// The item's tier share (plus any rollover it received) was too small.
     TierBudget,
@@ -65,7 +65,7 @@ pub enum DropReason {
 }
 
 /// What packing did with one candidate (D25).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub enum Placement {
     /// Not packed yet; [`fuse`]/[`super::rerank`] leave this in place.
     #[default]
