@@ -79,7 +79,7 @@ pub enum Placement {
 }
 
 /// One candidate hit, post-fusion.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct RecallHit {
     /// Canonical row id — the join key between legs and rerank inputs.
     pub rowid: i64,
@@ -122,7 +122,7 @@ impl RecallHit {
 }
 
 /// Outcome of one recall call.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct RecallReport {
     /// Hits in *injection* order: pinned first, then by final score (packing,
     /// D25). Dropped candidates are kept (with [`Placement::Dropped`]) so

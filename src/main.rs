@@ -33,7 +33,12 @@ fn main() {
     let cfg = Config::load(cli.config.as_deref().map(std::path::Path::new)).unwrap_or_default();
     let _ = agos_memory::observe::init_tracing(&cfg.log_filter);
 
-    let code = match run(cli) {
+    let code = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(run(cli))
+    {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("error: {e}");

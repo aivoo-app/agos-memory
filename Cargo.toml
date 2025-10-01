@@ -38,6 +38,7 @@ async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+tempfile = "3"
 
 [features]
 default = []
@@ -47,7 +48,6 @@ default = []
 local-embed = []
 
 [dev-dependencies]
-tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
