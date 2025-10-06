@@ -48,6 +48,11 @@ default = []
 local-embed = []
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+
+[[bench]]
+name = "recall_bench"
+harness = false
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
