@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::storage::{StoreHandle, schema};
 
 /// Run init against the resolved config.
-pub fn run(cfg: &Config, force: bool) -> Result<()> {
+pub async fn run(cfg: &Config, force: bool) -> Result<()> {
     let config_path = Path::new("agos-memory.toml");
     if force || !config_path.exists() {
         if config_path.exists() && force {
@@ -23,19 +23,12 @@ pub fn run(cfg: &Config, force: bool) -> Result<()> {
         );
     }
 
-    let store = tokio::runtime::Runtime::new()
-        .map_err(|e| Error::Storage(format!("cannot start tokio runtime: {e}")))?
-        .block_on(async { StoreHandle::open(cfg, crate::defaults::READ_POOL_SIZE).await })?;
+    let store = StoreHandle::open(cfg, crate::defaults::READ_POOL_SIZE).await?;
 
     // Warm the schema and confirm the vector extension end to end.
-    let (v, integrity, sv) = tokio::runtime::Runtime::new()
-        .map_err(|e| Error::Storage(format!("cannot start tokio runtime: {e}")))?
-        .block_on(async {
-            let v = store.vec_version().await?;
-            let integrity = store.integrity().await?;
-            let sv = store.schema_version().await?;
-            Ok::<(String, String, i64), Error>((v, integrity, sv))
-        })?;
+    let v = store.vec_version().await?;
+    let integrity = store.integrity().await?;
+    let sv = store.schema_version().await?;
 
     println!("db:            {}", cfg.db_path.display());
     println!(

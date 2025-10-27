@@ -131,6 +131,123 @@ impl Default for BudgetConfig {
     }
 }
 
+/// Recall (read-path) tuning — v0.3.0.
+///
+/// Controls hybrid retrieval, rerank weights, per-tier half-life decay, token
+/// packing, and the trust policy. See plan/DECISIONS.md (D24–D29) and
+/// `docs/recall.md`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecallConfig {
+    /// Number of ranked items to return before packing (D28).
+    pub top_k: usize,
+    /// Soft token ceiling for one recall, enforced by whole-item packing (D25).
+    pub budget_tokens: u64,
+    /// Minimum rerank score for an item to be considered a hit (D26 no-hit).
+    pub min_score: f32,
+    /// Whether episodic-tier memories are eligible (D26).
+    pub include_episodic: bool,
+    /// Whether `pending` memories are eligible (D28).
+    pub include_pending: bool,
+    /// Trust policy: Strict excludes untrusted unless opted in (D29).
+    pub trust_policy: TrustPolicy,
+    /// Rerank weight splits (D23).
+    pub weights: RecallWeights,
+    /// Per-tier half-lives in hours; `0` = no decay (D24).
+    pub half_life: RecallHalfLives,
+    /// Fraction of `budget_tokens` reserved per tier (D25). Unused share rolls
+    /// down to the next tier in declared order.
+    pub budget_split: BudgetSplit,
+}
+
+/// Trust handling during recall (D29).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TrustPolicy {
+    /// `trusted` + `system` only; `--include-untrusted` opts into fenced hits.
+    #[default]
+    Strict,
+    /// Untrusted memories are retrieved and rendered inside a fence as data.
+    Fenced,
+}
+
+/// Rerank weight splits (D23). They need not sum to 1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecallWeights {
+    pub sim: f32,
+    pub importance: f32,
+    pub decay: f32,
+}
+
+impl Default for RecallWeights {
+    fn default() -> Self {
+        Self {
+            sim: 0.60,
+            importance: 0.25,
+            decay: 0.15,
+        }
+    }
+}
+
+/// Per-tier half-life in hours. `0` means no decay (D24).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecallHalfLives {
+    pub working_hours: f64,
+    pub episodic_hours: f64,
+    pub semantic_hours: f64,
+    pub procedural_hours: f64,
+}
+
+impl Default for RecallHalfLives {
+    fn default() -> Self {
+        Self {
+            working_hours: 6.0,
+            episodic_hours: 21.0 * 24.0,
+            semantic_hours: 0.0,
+            procedural_hours: 0.0,
+        }
+    }
+}
+
+/// Fraction of the token budget reserved per tier (must sum to ~1.0) (D25).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BudgetSplit {
+    pub working: f64,
+    pub episodic: f64,
+    pub semantic: f64,
+    pub procedural: f64,
+}
+
+impl Default for BudgetSplit {
+    fn default() -> Self {
+        Self {
+            working: 0.40,
+            episodic: 0.30,
+            semantic: 0.20,
+            procedural: 0.10,
+        }
+    }
+}
+
+impl Default for RecallConfig {
+    fn default() -> Self {
+        Self {
+            top_k: 8,
+            budget_tokens: 1500,
+            min_score: 0.35,
+            include_episodic: false,
+            include_pending: false,
+            trust_policy: TrustPolicy::Strict,
+            weights: RecallWeights::default(),
+            half_life: RecallHalfLives::default(),
+            budget_split: BudgetSplit::default(),
+        }
+    }
+}
+
 /// Memory write-path tuning.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -175,6 +292,8 @@ pub struct Config {
     pub budget: BudgetConfig,
     /// Write-path tuning (pending/dedup thresholds).
     pub memory: MemoryConfig,
+    /// Recall (read path) tuning: hybrid retrieval, rerank, packing, trust.
+    pub recall: RecallConfig,
     /// RUST_LOG-style filter for tracing.
     pub log_filter: String,
 }
@@ -190,6 +309,7 @@ impl Default for Config {
             session: SessionConfig::default(),
             budget: BudgetConfig::default(),
             memory: MemoryConfig::default(),
+            recall: RecallConfig::default(),
             log_filter: "info".into(),
         }
     }
@@ -253,6 +373,28 @@ impl Config {
         if let Ok(v) = std::env::var("AGOS_MEMORY_TOKEN") {
             self.server.token = v;
         }
+        if let Ok(v) = std::env::var("AGOS_MEMORY_RECALL_TOP_K") {
+            self.recall.top_k = v.parse().unwrap_or(self.recall.top_k);
+        }
+        if let Ok(v) = std::env::var("AGOS_MEMORY_RECALL_BUDGET_TOKENS") {
+            self.recall.budget_tokens = v.parse().unwrap_or(self.recall.budget_tokens);
+        }
+        if let Ok(v) = std::env::var("AGOS_MEMORY_RECALL_MIN_SCORE") {
+            self.recall.min_score = v.parse().unwrap_or(self.recall.min_score);
+        }
+        if let Ok(v) = std::env::var("AGOS_MEMORY_RECALL_INCLUDE_EPISODIC") {
+            self.recall.include_episodic = matches!(v.as_str(), "true" | "1");
+        }
+        if let Ok(v) = std::env::var("AGOS_MEMORY_RECALL_INCLUDE_PENDING") {
+            self.recall.include_pending = matches!(v.as_str(), "true" | "1");
+        }
+        if let Ok(v) = std::env::var("AGOS_MEMORY_RECALL_INCLUDE_UNTRUSTED") {
+            self.recall.trust_policy = if matches!(v.as_str(), "true" | "1") {
+                TrustPolicy::Fenced
+            } else {
+                TrustPolicy::Strict
+            };
+        }
     }
 
     /// Validate invariants. Fail closed on unsafe server exposure.
@@ -280,6 +422,26 @@ impl Config {
             return Err(Error::Config(
                 "memory.dedup_threshold must be between 0.0 and 1.0".into(),
             ));
+        }
+        if self.recall.top_k == 0 {
+            return Err(Error::Config("recall.top_k must be > 0".into()));
+        }
+        if self.recall.budget_tokens == 0 {
+            return Err(Error::Config("recall.budget_tokens must be > 0".into()));
+        }
+        if self.recall.min_score < 0.0 || self.recall.min_score > 1.0 {
+            return Err(Error::Config(
+                "recall.min_score must be between 0.0 and 1.0".into(),
+            ));
+        }
+        let split_sum = self.recall.budget_split.working
+            + self.recall.budget_split.episodic
+            + self.recall.budget_split.semantic
+            + self.recall.budget_split.procedural;
+        if !(0.95..=1.05).contains(&split_sum) {
+            return Err(Error::Config(format!(
+                "recall.budget_split must sum to ~1.0 (got {split_sum})"
+            )));
         }
         if !self.server.bind.starts_with("127.0.0.1") && !self.server.bind.starts_with("[::1]") {
             if self.server.token.is_empty() {
@@ -315,6 +477,10 @@ impl std::fmt::Debug for Config {
             .field("server.bind", &self.server.bind)
             .field("server.token", &redact(&self.server.token))
             .field("log_filter", &self.log_filter)
+            .field("recall.top_k", &self.recall.top_k)
+            .field("recall.budget_tokens", &self.recall.budget_tokens)
+            .field("recall.min_score", &self.recall.min_score)
+            .field("recall.trust_policy", &self.recall.trust_policy)
             .finish()
     }
 }

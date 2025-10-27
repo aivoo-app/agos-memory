@@ -78,4 +78,26 @@ gate-v0.2.0: ## v0.2.0 milestone gate (write path: fmt + clippy + tests + plan-g
 	cargo build --release
 	$(MAKE) smoke
 
+eval: ## Run offline eval gate (precision ≥0.90, recall ≥0.95, MRR ≥0.80, 0 leaks)
+	@set -euo pipefail; \
+	DIR=$$(mktemp -d); \
+	DB=$$DIR/eval.db; \
+	cp fixtures/eval_cases.jsonl $$DIR/; \
+	CFG="--config agos-memory.toml --db $$DB"; \
+	cargo run --quiet -- $$CFG eval --file $$DIR/eval_cases.jsonl --min-precision 0.90 --min-recall 0.95 --min-mrr 0.80 --json 2>&1 | tail -20; \
+	rm -rf $$DIR
+
+bench: ## Run recall performance benchmark (p95 < 150ms)
+	cargo bench --bench recall_bench
+
+gate-v0.3.0: ## v0.3.0 milestone gate (fmt + clippy -D + tests + plan-guard + build + smoke + eval + bench)
+	cargo fmt --all -- --check
+	cargo clippy --all-targets -- -D warnings
+	cargo test --all-targets
+	$(MAKE) plan-guard
+	cargo build --release
+	$(MAKE) smoke
+	$(MAKE) eval
+	$(MAKE) bench
+
 ci: plan-guard check ## CI pipeline (offline; no provider access needed)

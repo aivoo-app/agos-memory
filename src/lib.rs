@@ -26,6 +26,7 @@ pub mod http;
 pub mod llm;
 pub mod memory;
 pub mod observe;
+pub mod recall;
 pub mod sqlite_vec;
 pub mod storage;
 pub mod util;

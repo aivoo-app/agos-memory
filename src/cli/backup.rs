@@ -11,14 +11,10 @@ use crate::error::{Error, Result};
 use crate::storage::StoreHandle;
 
 /// Run backup against the resolved config.
-pub fn run(cfg: &Config, out: &Path) -> Result<()> {
-    let store = tokio::runtime::Runtime::new()
-        .map_err(|e| Error::Storage(format!("cannot start tokio runtime: {e}")))?
-        .block_on(async { StoreHandle::open(cfg, crate::defaults::READ_POOL_SIZE).await })?;
+pub async fn run(cfg: &Config, out: &Path) -> Result<()> {
+    let store = StoreHandle::open(cfg, crate::defaults::READ_POOL_SIZE).await?;
 
-    let report = tokio::runtime::Runtime::new()
-        .map_err(|e| Error::Storage(format!("cannot start tokio runtime: {e}")))?
-        .block_on(async { store.snapshot_to(out).await })?;
+    let report = store.snapshot_to(out).await?;
 
     println!("snapshot:    {}", report.path.display());
     println!("bytes:       {}", report.bytes);

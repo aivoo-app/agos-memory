@@ -93,6 +93,12 @@ impl From<rusqlite::Error> for Error {
     }
 }
 
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Error::Storage(format!("serde_json: {e}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

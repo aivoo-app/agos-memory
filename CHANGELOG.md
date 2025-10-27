@@ -4,6 +4,40 @@ All notable changes to agos-memory are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/); versioning
 follows [SemVer](https://semver.org/).
 
+## [0.3.0] — 2026-09-21
+
+The recall path: hybrid retrieval, hard filters, rerank, packing, audit, citations.
+
+### Added
+- **Hybrid recall** (`agos_memory::recall`): vector KNN (sqlite-vec) + keyword BM25 (FTS5), fused by RRF (K=60), hard-filtered inside both legs and after fusion (zero-leak guarantee).
+- **Rerank (D23/D24)**: blended score `w1·sim_norm + w2·importance_eff + w3·decay`; default weights 0.60/0.25/0.15; per-tier half-lives (working=6h, episodic=21d, semantic/procedural=∞).
+- **Token packing (D25)**: 1500-token ceiling; tier split 40/30/20/10 with rollover; pinned first; whole-item drop or summary-swap, never truncation.
+- **No-hit semantics (D26)**: `min_score` threshold (default 0.35); below it → `no_hit=true`, empty injection, never a weak hit; caller decides.
+- **Trust policy (D29)**: `Strict` (default: trusted+system) vs `Fenced` (opt-in untrusted, rendered fenced as data).
+- **Degraded mode (D4)**: embedding unavailable → BM25-only, `degraded=true`, never a panic.
+- **Explain & citations (0035)**: `MemoryExplain` (provenance, version chain, links, ref_count, recall injections), `why()` rank boosters, fenced `<memory>` wire format with `trust` attribute.
+- **Audit trail (0036)**: `recalls`, `recall_items`, `token_ledger` rows per call; `components_json` and `tier_split_json` round-trip through serde.
+- **CLI commands (0037)**: `recall` (text, k, budget, trust filters, --json/--explain), `explain <id>`, `eval` (JSONL cases, precision/recall/MRR gates, deterministic HashEmbedder).
+- **Perf benchmark (0038)**: `benches/recall_bench.rs` with Criterion — `recall_full`, `embed_only`, `vec_scan_degraded`, `recall_p95` (p95 < 150ms assertion); uses HashEmbedder for hermetic offline benchmark.
+- **Integration suites (0039)**: 8 test suites — `recall_hybrid`, `recall_filters`, `recall_budget`, `recall_explain`, `recall_nohit`, `recall_degraded`, `recall_audit`, `eval_gate`.
+- **Makefile**: `make eval`, `make bench`, `make gate-v0.3.0` (fmt + clippy -D + tests + plan-guard + build + smoke + eval + bench).
+- **Docs**: `docs/recall.md` (full math spec), ADR-006 (hybrid retrieval), ADR-007 (token packing).
+
+### Fixed
+- **Hard filter zero-leak**: proved SQL predicate and Rust mirror agree row-for-row; `tests/recall_filters.rs` validates zero leaks on both retrieval paths.
+- **No-hit rendering**: exact D26 phrasing `No useful memories for "<query>"` with min_score and candidates.
+- **Degraded mode**: never panics; provider=none → BM25-only, `degraded=true`.
+- **Packing**: ceiling exact, whole-item drop (no truncation), tier split respected, rollover works, summary-swap verified.
+
+### Changed
+- `version = "0.3.0"`; `Cargo.toml` bumped.
+- `Makefile`: added `eval`, `bench`, `gate-v0.3.0` targets.
+- `docs/architecture.md`: updated with recall path section.
+- `Cargo.toml`: added `criterion` dev-dependency, `[[bench]]` target for `recall_bench`.
+
+### Removed
+- (none — all v0.2.0 features preserved)
+
 ## [0.2.0] — 2026-09-20
 
 The write path: facts go in, durably, with provenance.

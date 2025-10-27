@@ -49,7 +49,7 @@ pub fn load_cases(path: &Path) -> Result<Vec<EvalCase>> {
 }
 
 /// Metrics for one run.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Metrics {
     /// Relevant returned / relevant available.
     pub precision: f64,

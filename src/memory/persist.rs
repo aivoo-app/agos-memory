@@ -147,6 +147,21 @@ pub async fn persist_candidate_full<E: Embedder>(
             } else {
                 "active"
             };
+            // Integer codes mirror the memories-table CHECK constraints so the
+            // vec0 row stays consistent with the canonical `memories` row.
+            let status_code = match status {
+                "active" => 0,
+                "pending" => 1,
+                "deprecated" => 2,
+                "deleted" => 3,
+                _ => unreachable!(),
+            };
+            let trust_code = match trust {
+                "trusted" => 0,
+                "untrusted" => 1,
+                "system" => 2,
+                _ => unreachable!(),
+            };
             conn.execute(
                 "INSERT INTO memories (public_id, tier, kind, text, text_hash,
                  status, trust, source_kind, extractor_version, embed_model,
@@ -176,8 +191,8 @@ pub async fn persist_candidate_full<E: Embedder>(
             )?;
             conn.execute(
                 "INSERT INTO vec_memories(rowid, embedding, tier, status, trust, kind, pinned)
-                 VALUES (?1, ?2, ?3, 0, 0, ?4, 0)",
-                rusqlite::params![id, &bytes, &cand.tier, &cand.kind],
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
+                rusqlite::params![id, &bytes, &cand.tier, status_code, trust_code, &cand.kind],
             )?;
             Ok(PersistReport {
                 row: MemoryRow {

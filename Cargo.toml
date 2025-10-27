@@ -1,6 +1,6 @@
 [package]
 name = "agos-memory"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Self-hosted agent memory manager: durable, tiered, citation-backed memory for AI agents via MCP and HTTP"
@@ -38,6 +38,7 @@ async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+tempfile = "3"
 
 [features]
 default = []
@@ -47,7 +48,11 @@ default = []
 local-embed = []
 
 [dev-dependencies]
-tempfile = "3"
+criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+
+[[bench]]
+name = "recall_bench"
+harness = false
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -243,6 +243,33 @@ pub fn hash_to_unit_vector(text: &str, dim: usize) -> Vec<f32> {
     }
 }
 
+/// Build an [`Embedder`] from the CLI/Config embedding settings.
+///
+/// Returns `NoEmbedder` when `provider = "none"`, otherwise returns
+/// `OpenAiCompatEmbedder` pointed at the configured base_url/model/dim.
+/// The `dim` is read from the store's `meta` table (pinned at init).
+pub fn embedder_from_config(embed: &crate::config::EmbedConfig, dim: usize) -> Box<dyn Embedder> {
+    use crate::config::EmbedProvider;
+    use crate::http::HttpConfig;
+
+    match embed.provider {
+        EmbedProvider::None => Box::new(NoEmbedder),
+        EmbedProvider::OpenAiCompat => {
+            let http = HttpConfig::new(
+                embed.base_url.clone(),
+                embed.api_key.clone(),
+                embed.timeout_secs,
+            );
+            let model = if embed.model.is_empty() {
+                "text-embedding-3-small".to_string()
+            } else {
+                embed.model.clone()
+            };
+            Box::new(OpenAiCompatEmbedder::new(http, model, dim))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
