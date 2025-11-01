@@ -11,6 +11,7 @@ pub mod jobs;
 pub mod persist;
 pub mod redact;
 pub mod sessions;
+pub mod summarize;
 pub mod worker;
 
 pub use extract::Candidate;
@@ -21,6 +22,7 @@ pub use persist::{
 };
 pub use redact::{REDACTED, redact};
 pub use sessions::{SessionRow, TurnRow};
+pub use summarize::{SummarizeReport, run_summarization_job, summarize_by_id, summarize_tier};
 
 /// Confidence below this → `status='pending'` instead of `active` (D-pending).
 pub const PENDING_THRESHOLD_DEFAULT: f64 = 0.4;

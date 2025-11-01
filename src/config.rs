@@ -258,6 +258,13 @@ pub struct MemoryConfig {
     /// Cosine similarity above which a candidate is treated as a duplicate of
     /// an existing memory and bumps its reference count (default 0.92).
     pub dedup_threshold: f64,
+    /// Days after which a memory is eligible for automatic summarization.
+    /// Set to 0 to disable for this tier (default: working=7, episodic=30,
+    /// semantic=90, procedural=180).
+    pub summarize_after_days_working: u32,
+    pub summarize_after_days_episodic: u32,
+    pub summarize_after_days_semantic: u32,
+    pub summarize_after_days_procedural: u32,
 }
 
 impl Default for MemoryConfig {
@@ -265,6 +272,23 @@ impl Default for MemoryConfig {
         Self {
             pending_threshold: 0.4,
             dedup_threshold: 0.92,
+            summarize_after_days_working: 7,
+            summarize_after_days_episodic: 30,
+            summarize_after_days_semantic: 90,
+            summarize_after_days_procedural: 180,
+        }
+    }
+}
+
+impl MemoryConfig {
+    /// Get the summarize_after_days threshold for a given tier.
+    pub fn summarize_after_days_for_tier(&self, tier: &str) -> u32 {
+        match tier {
+            "working" => self.summarize_after_days_working,
+            "episodic" => self.summarize_after_days_episodic,
+            "semantic" => self.summarize_after_days_semantic,
+            "procedural" => self.summarize_after_days_procedural,
+            _ => 0,
         }
     }
 }

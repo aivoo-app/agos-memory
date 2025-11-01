@@ -5,6 +5,7 @@ use agos_memory::config::Config;
 use agos_memory::memory::worker::Worker;
 use agos_memory::memory::{dead_count, enqueue, jobs};
 use agos_memory::storage::StoreHandle;
+use std::sync::Arc;
 
 async fn test_store(name: &str) -> (StoreHandle, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -47,9 +48,12 @@ async fn failing_job_reaches_dlq_and_requeues() {
         .await
         .unwrap();
 
-    let mut worker = Worker::new(store.clone());
-    worker.on("extract", |_job, _store| async {
-        Err(agos_memory::error::Error::Llm("boom".into()))
+    let llm: Arc<dyn agos_memory::llm::ChatClient> =
+        Arc::new(agos_memory::llm::MockChat::fixed(""));
+    let config = Arc::new(Config::default());
+    let mut worker = Worker::new(store.clone(), llm, config);
+    worker.on("extract", |_job, _store, _llm, _config| {
+        Box::pin(async move { Err(agos_memory::error::Error::Llm("boom".into())) })
     });
     let w = std::sync::Arc::new(worker);
     let w2 = w.clone();

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rusqlite::Connection;
+use rusqlite::OptionalExtension;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
@@ -13,6 +14,34 @@ use crate::storage::schema::{self, SCHEMA_VERSION};
 use crate::storage::vecext;
 use crate::storage::writer::WriterHandle;
 use crate::util::Clock;
+use serde_json;
+
+/// A single version of a memory row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryVersion {
+    /// Internal version id.
+    pub id: i64,
+    /// Parent memory id.
+    pub memory_id: i64,
+    /// Version number (1, 2, 3, ...).
+    pub version: i64,
+    /// Text at this version.
+    pub text: String,
+    /// SHA-256 of text.
+    pub text_hash: String,
+    /// Source turn id (optional).
+    pub source_turn_id: Option<i64>,
+    /// Previous version number (optional).
+    pub supersedes_version: Option<i64>,
+    /// Why this version was created.
+    pub change_reason: Option<String>,
+    /// JSON diff from previous version.
+    pub diff_json: Option<String>,
+    /// Who/what created this version.
+    pub created_by: Option<String>,
+    /// Creation time (UTC epoch millis).
+    pub created_at: i64,
+}
 
 /// A single memory row as read back from storage.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +62,12 @@ pub struct MemoryRow {
     pub trust: String,
     /// Creation time (UTC epoch millis).
     pub created_at: i64,
+    /// Last update time (UTC epoch millis).
+    pub updated_at: i64,
+    /// Summary text (optional, for summary-swap).
+    pub summary_text: Option<String>,
+    /// Token count of summary.
+    pub summary_tokens: i64,
 }
 
 /// Data for a new memory; storage assigns ids and timestamps.
@@ -59,6 +94,87 @@ pub struct SnapshotReport {
     pub integrity: String,
     /// Row counts per core table in the snapshot (verification detail).
     pub tables: Vec<(String, i64)>,
+}
+
+/// Compute a simple line-based diff between two texts.
+fn compute_line_diff(old: &str, new: &str) -> LineDiff {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+
+    // Simple LCS-based diff
+    let lcs = compute_lcs(&old_lines, &new_lines);
+    let mut i = 0;
+    let mut j = 0;
+    for &len in &lcs {
+        // Lines in old before the LCS match are removed
+        while i < len.0 {
+            removed.push(old_lines[i].to_string());
+            i += 1;
+        }
+        // Lines in new before the LCS match are added
+        while j < len.1 {
+            added.push(new_lines[j].to_string());
+            j += 1;
+        }
+        // Skip the matched line
+        i += 1;
+        j += 1;
+    }
+    // Remaining lines
+    while i < old_lines.len() {
+        removed.push(old_lines[i].to_string());
+        i += 1;
+    }
+    while j < new_lines.len() {
+        added.push(new_lines[j].to_string());
+        j += 1;
+    }
+
+    LineDiff { added, removed }
+}
+
+struct LineDiff {
+    added: Vec<String>,
+    removed: Vec<String>,
+}
+
+/// Compute the longest common subsequence of two slices of lines.
+/// Returns a list of (old_index, new_index) pairs that are common.
+fn compute_lcs(old: &[&str], new: &[&str]) -> Vec<(usize, usize)> {
+    let m = old.len();
+    let n = new.len();
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+
+    for i in 1..=m {
+        for j in 1..=n {
+            if old[i - 1] == new[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1] + 1;
+            } else {
+                dp[i][j] = std::cmp::max(dp[i - 1][j], dp[i][j - 1]);
+            }
+        }
+    }
+
+    // Backtrack to find the LCS pairs
+    let mut result = Vec::new();
+    let mut i = m;
+    let mut j = n;
+    while i > 0 && j > 0 {
+        if old[i - 1] == new[j - 1] {
+            result.push((i - 1, j - 1));
+            i -= 1;
+            j -= 1;
+        } else if dp[i - 1][j] >= dp[i][j - 1] {
+            i -= 1;
+        } else {
+            j -= 1;
+        }
+    }
+    result.reverse();
+    result
 }
 
 /// Row counts of the core tables, used to verify a snapshot against the live
@@ -328,8 +444,16 @@ impl StoreHandle {
                         now
                     ],
                 )?;
+                let id = conn.last_insert_rowid();
+                // Insert initial version
+                conn.execute(
+                    "INSERT INTO memory_versions (memory_id, version, text, text_hash, source_turn_id,
+                            supersedes_version, change_reason, diff_json, created_by, created_at)
+                     VALUES (?1, 1, ?2, ?3, NULL, NULL, NULL, NULL, NULL, ?4)",
+                    rusqlite::params![id, &m.text, &text_hash, now],
+                )?;
                 Ok(MemoryRow {
-                    id: conn.last_insert_rowid(),
+                    id: id,
                     public_id: pid,
                     tier: m.tier.clone(),
                     kind: m.kind.clone(),
@@ -337,6 +461,9 @@ impl StoreHandle {
                     status: "active".into(),
                     trust: "trusted".into(),
                     created_at: now,
+                    updated_at: now,
+                    summary_text: None,
+                    summary_tokens: 0,
                 })
             })
             .await?;
@@ -361,7 +488,7 @@ impl StoreHandle {
     pub async fn get_memory(&self, public_id: String) -> Result<Option<MemoryRow>> {
         self.read(move |conn| {
             let q = "
-                SELECT id, public_id, tier, kind, text, status, trust, created_at
+                SELECT id, public_id, tier, kind, text, status, trust, created_at, updated_at, summary_text, summary_tokens
                 FROM memories WHERE public_id = ?1";
             match conn.query_row(q, [public_id], |r| {
                 Ok(MemoryRow {
@@ -373,12 +500,350 @@ impl StoreHandle {
                     status: r.get(5)?,
                     trust: r.get(6)?,
                     created_at: r.get(7)?,
+                    updated_at: r.get(8)?,
+                    summary_text: r.get(9)?,
+                    summary_tokens: r.get(10).unwrap_or(0),
                 })
             }) {
                 Ok(m) => Ok(Some(m)),
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(e.into()),
             }
+        })
+        .await
+    }
+
+    /// Fetch one memory by internal id.
+    pub async fn get_memory_by_id(&self, id: i64) -> Result<Option<MemoryRow>> {
+        self.read(move |conn| {
+            let q = "
+                SELECT id, public_id, tier, kind, text, status, trust, created_at, updated_at, summary_text, summary_tokens
+                FROM memories WHERE id = ?1";
+            match conn.query_row(q, [id], |r| {
+                Ok(MemoryRow {
+                    id: r.get(0)?,
+                    public_id: r.get(1)?,
+                    tier: r.get(2)?,
+                    kind: r.get(3)?,
+                    text: r.get(4)?,
+                    status: r.get(5)?,
+                    trust: r.get(6)?,
+                    created_at: r.get(7)?,
+                    updated_at: r.get(8)?,
+                    summary_text: r.get(9)?,
+                    summary_tokens: r.get(10).unwrap_or(0),
+                })
+            }) {
+                Ok(m) => Ok(Some(m)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(e.into()),
+            }
+        })
+        .await
+    }
+
+    /// Fetch all versions of a memory by its internal id, ordered by version ASC.
+    pub async fn get_memory_versions(&self, memory_id: i64) -> Result<Vec<MemoryVersion>> {
+        self.read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, memory_id, version, text, text_hash, source_turn_id,
+                        supersedes_version, change_reason, diff_json, created_by, created_at
+                 FROM memory_versions WHERE memory_id = ?1
+                 ORDER BY version ASC",
+            )?;
+            let iter = stmt.query_map([memory_id], |r| {
+                Ok(MemoryVersion {
+                    id: r.get(0)?,
+                    memory_id: r.get(1)?,
+                    version: r.get(2)?,
+                    text: r.get(3)?,
+                    text_hash: r.get(4)?,
+                    source_turn_id: r.get(5)?,
+                    supersedes_version: r.get(6)?,
+                    change_reason: r.get(7)?,
+                    diff_json: r.get(8)?,
+                    created_by: r.get(9)?,
+                    created_at: r.get(10)?,
+                })
+            })?;
+            let mut versions = Vec::new();
+            for row in iter {
+                versions.push(row.map_err(|e| crate::error::Error::Storage(e.to_string()))?);
+            }
+            Ok(versions)
+        })
+        .await
+    }
+
+    /// Fetch a single version by (memory_id, version) pair.
+    pub async fn get_memory_version(
+        &self,
+        memory_id: i64,
+        version: i64,
+    ) -> Result<Option<MemoryVersion>> {
+        self.read(move |conn| {
+            let q = "
+                SELECT id, memory_id, version, text, text_hash, source_turn_id,
+                        supersedes_version, change_reason, diff_json, created_by, created_at
+                FROM memory_versions WHERE memory_id = ?1 AND version = ?2";
+            match conn.query_row(q, [memory_id, version], |r| {
+                Ok(MemoryVersion {
+                    id: r.get(0)?,
+                    memory_id: r.get(1)?,
+                    version: r.get(2)?,
+                    text: r.get(3)?,
+                    text_hash: r.get(4)?,
+                    source_turn_id: r.get(5)?,
+                    supersedes_version: r.get(6)?,
+                    change_reason: r.get(7)?,
+                    diff_json: r.get(8)?,
+                    created_by: r.get(9)?,
+                    created_at: r.get(10)?,
+                })
+            }) {
+                Ok(m) => Ok(Some(m)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(e.into()),
+            }
+        })
+        .await
+    }
+
+    /// Update a memory's text and record a new version.
+    ///
+    /// Inserts a new row in `memory_versions` with the new text, diff from the
+    /// previous version, change_reason, and created_by. Updates the `memories`
+    /// row text and updated_at. Returns the new MemoryRow.
+    pub async fn update_memory(
+        &self,
+        memory_id: i64,
+        new_text: &str,
+        change_reason: Option<&str>,
+        created_by: Option<&str>,
+    ) -> Result<MemoryRow> {
+        let new_text_owned = new_text.to_string();
+        let new_hash = crate::util::sha256_hex(&new_text_owned);
+        let reason = change_reason.map(|s| s.to_string());
+        let by = created_by.map(|s| s.to_string());
+
+        self.write(move |conn| {
+            // Get current version number
+            let current_version: i64 = conn.query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM memory_versions WHERE memory_id = ?1",
+                [memory_id],
+                |r| r.get(0),
+            )?;
+
+            // Get previous text for diff
+            let prev_text: Option<String> = conn.query_row(
+                "SELECT text FROM memory_versions WHERE memory_id = ?1 AND version = ?2",
+                [memory_id, current_version],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten();
+
+            // Compute diff JSON
+            let diff_json = prev_text.as_ref().map(|old| {
+                let diff = compute_line_diff(old, &new_text_owned);
+                serde_json::json!({
+                    "old_hash": crate::util::sha256_hex(old),
+                    "new_hash": new_hash,
+                    "added_lines": diff.added,
+                    "removed_lines": diff.removed,
+                    "changed": !diff.added.is_empty() || !diff.removed.is_empty(),
+                })
+                .to_string()
+            });
+
+            let now = crate::util::SystemClock.now_millis();
+            let new_version = current_version + 1;
+
+            // Insert new version
+            conn.execute(
+                "INSERT INTO memory_versions (memory_id, version, text, text_hash, source_turn_id,
+                        supersedes_version, change_reason, diff_json, created_by, created_at)
+                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    memory_id,
+                    new_version,
+                    &new_text_owned,
+                    &new_hash,
+                    if current_version > 0 { Some(current_version) } else { None },
+                    reason.as_deref(),
+                    diff_json.as_deref(),
+                    by.as_deref(),
+                    now,
+                ],
+            )?;
+
+            // Update the memories row
+            conn.execute(
+                "UPDATE memories SET text = ?1, text_hash = ?2, updated_at = ?3 WHERE id = ?4",
+                rusqlite::params![&new_text_owned, &new_hash, now, memory_id],
+            )?;
+
+            // Fetch the updated row
+            let row = conn.query_row(
+                "SELECT id, public_id, tier, kind, text, status, trust, created_at, updated_at, summary_text, summary_tokens
+                 FROM memories WHERE id = ?1",
+                [memory_id],
+                |r| {
+                    Ok(MemoryRow {
+                        id: r.get(0)?,
+                        public_id: r.get(1)?,
+                        tier: r.get(2)?,
+                        kind: r.get(3)?,
+                        text: r.get(4)?,
+                        status: r.get(5)?,
+                        trust: r.get(6)?,
+                        created_at: r.get(7)?,
+                        updated_at: r.get(8)?,
+                        summary_text: r.get(9)?,
+                        summary_tokens: r.get(10).unwrap_or(0),
+                    })
+                },
+            )?;
+
+            Ok(row)
+        })
+        .await
+    }
+
+    /// Rollback a memory to a specific version.
+    ///
+    /// Creates a new version whose text matches the target version, with
+    /// `change_reason` recording the rollback. The original version chain
+    /// is preserved. Returns the new MemoryRow.
+    pub async fn rollback_memory(
+        &self,
+        memory_id: i64,
+        target_version: i64,
+        created_by: Option<&str>,
+    ) -> Result<MemoryRow> {
+        // Fetch the target version
+        let target = self
+            .get_memory_version(memory_id, target_version)
+            .await?
+            .ok_or_else(|| {
+                Error::InvalidInput(format!(
+                    "version {} not found for memory {}",
+                    target_version, memory_id
+                ))
+            })?;
+
+        let reason = format!("rollback to version {}", target_version);
+        let new_text = target.text.clone();
+
+        self.update_memory(memory_id, &new_text, Some(&reason), created_by)
+            .await
+    }
+
+    /// Soft-deprecate a memory: sets `status = 'deprecated'`, `deleted_at = now`.
+    /// Memory is excluded from recall (hard filter already excludes deprecated).
+    /// Recoverable via `restore_memory`.
+    pub async fn deprecate_memory(&self, memory_id: i64) -> Result<()> {
+        let now = crate::util::SystemClock.now_millis();
+        self.write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET status = 'deprecated', deleted_at = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![now, now, memory_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Restore a soft-deprecated memory back to active.
+    pub async fn restore_memory(&self, memory_id: i64) -> Result<()> {
+        let now = crate::util::SystemClock.now_millis();
+        self.write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET status = 'active', deleted_at = NULL, updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![now, memory_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Hard purge: deletes from memories, memory_versions, memory_links,
+    /// vec_memories, and inserts a tombstone row. Runs VACUUM.
+    pub async fn hard_purge_memory(
+        &self,
+        memory_id: i64,
+        deleted_by: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        let now = crate::util::SystemClock.now_millis();
+        let agent_id = self.inner.agent_id.clone();
+        let deleted_by_owned = deleted_by.map(|s| s.to_string());
+        let reason_owned = reason.map(|s| s.to_string());
+
+        self.write(move |conn| {
+            // Get public_id and text_hash before deletion
+            let (public_id, text_hash): (String, String) = conn.query_row(
+                "SELECT public_id, text_hash FROM memories WHERE id = ?1",
+                [memory_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+
+            // Count rows before
+            let rowcount_before: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE id = ?1",
+                [memory_id],
+                |r| r.get(0),
+            )?;
+
+            // Delete from memory_links (both directions)
+            conn.execute(
+                "DELETE FROM memory_links WHERE from_memory_id = ?1 OR to_memory_id = ?1",
+                [memory_id],
+            )?;
+
+            // Delete from memory_versions
+            conn.execute(
+                "DELETE FROM memory_versions WHERE memory_id = ?1",
+                [memory_id],
+            )?;
+
+            // Delete from vec_memories
+            conn.execute(
+                "DELETE FROM vec_memories WHERE rowid = ?1",
+                [memory_id],
+            )?;
+
+            // Delete from memories (FTS trigger will handle fts_memories)
+            conn.execute(
+                "DELETE FROM memories WHERE id = ?1",
+                [memory_id],
+            )?;
+
+            let rowcount_after: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE id = ?1",
+                [memory_id],
+                |r| r.get(0),
+            )?;
+
+            // Insert tombstone
+            conn.execute(
+                "INSERT INTO tombstones (public_id, agent_id, memory_id, text_hash, deleted_at, deleted_by, reason, rowcount_before, rowcount_after)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    &public_id,
+                    &agent_id,
+                    memory_id,
+                    &text_hash,
+                    now,
+                    deleted_by_owned.as_deref(),
+                    reason_owned.as_deref(),
+                    rowcount_before,
+                    rowcount_after,
+                ],
+            )?;
+
+            Ok(())
         })
         .await
     }

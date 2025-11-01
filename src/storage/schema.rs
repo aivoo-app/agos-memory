@@ -75,6 +75,7 @@ pub const MIGRATIONS: &[&str] = &[
         ref_count           INTEGER NOT NULL DEFAULT 0,
         last_referenced_at  INTEGER,
         expires_at          INTEGER,
+        deleted_at          INTEGER,
         supersedes_id       INTEGER REFERENCES memories(id),
         superseded_by_id    INTEGER REFERENCES memories(id),
         source_kind         TEXT NOT NULL DEFAULT 'user'
@@ -106,6 +107,8 @@ pub const MIGRATIONS: &[&str] = &[
         source_turn_id     INTEGER REFERENCES turns(id),
         supersedes_version INTEGER,
         change_reason      TEXT,
+        diff_json          TEXT,
+        created_by         TEXT,
         created_at         INTEGER NOT NULL,
         UNIQUE (memory_id, version)
     );
@@ -239,11 +242,17 @@ pub const MIGRATIONS: &[&str] = &[
     );
 
     CREATE TABLE IF NOT EXISTS tombstones (
-        id        INTEGER PRIMARY KEY AUTOINCREMENT,
-        memory_id INTEGER NOT NULL,
-        text_hash TEXT NOT NULL,
-        reason    TEXT,
-        ts        INTEGER NOT NULL
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        public_id        TEXT NOT NULL,
+        agent_id         TEXT NOT NULL,
+        memory_id        INTEGER,
+        text_hash        TEXT NOT NULL,
+        deleted_at       INTEGER NOT NULL,
+        deleted_by       TEXT,
+        reason           TEXT,
+        rowcount_before  INTEGER NOT NULL,
+        rowcount_after   INTEGER NOT NULL,
+        vacuum_duration_ms INTEGER NOT NULL DEFAULT 0
     );
     "#,
 ];

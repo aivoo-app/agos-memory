@@ -116,7 +116,7 @@ pub async fn persist_candidate_full<E: Embedder>(
                         rusqlite::params![rowid, now],
                     )?;
                     let row = conn.query_row(
-                        "SELECT id, public_id, tier, kind, text, status, trust, created_at
+                        "SELECT id, public_id, tier, kind, text, status, trust, created_at, updated_at, summary_text, summary_tokens
                          FROM memories WHERE id = ?1",
                         [rowid],
                         |r| {
@@ -129,6 +129,9 @@ pub async fn persist_candidate_full<E: Embedder>(
                                 status: r.get(5)?,
                                 trust: r.get(6)?,
                                 created_at: r.get(7)?,
+                                updated_at: r.get(8)?,
+                                summary_text: r.get(9)?,
+                                summary_tokens: r.get(10).unwrap_or(0),
                             })
                         },
                     )?;
@@ -185,8 +188,9 @@ pub async fn persist_candidate_full<E: Embedder>(
             )?;
             let id = conn.last_insert_rowid();
             conn.execute(
-                "INSERT INTO memory_versions (memory_id, version, text, text_hash, created_at)
-                 VALUES (?1, 1, ?2, ?3, ?4)",
+                "INSERT INTO memory_versions (memory_id, version, text, text_hash, source_turn_id,
+                        supersedes_version, change_reason, diff_json, created_by, created_at)
+                 VALUES (?1, 1, ?2, ?3, NULL, NULL, NULL, NULL, NULL, ?4)",
                 rusqlite::params![id, &cand.text, &hash, now],
             )?;
             conn.execute(
@@ -204,6 +208,9 @@ pub async fn persist_candidate_full<E: Embedder>(
                     status: status.into(),
                     trust: trust.into(),
                     created_at: now,
+                    updated_at: now,
+                    summary_text: None,
+                    summary_tokens: 0,
                 },
                 deduped: false,
             })
@@ -303,7 +310,7 @@ async fn persist_candidate_no_vector(
                     rusqlite::params![id, now],
                 )?;
                 let row = conn.query_row(
-                    "SELECT id, public_id, tier, kind, text, status, trust, created_at
+                    "SELECT id, public_id, tier, kind, text, status, trust, created_at, updated_at, summary_text, summary_tokens
                      FROM memories WHERE id = ?1",
                     [id],
                     |r| {
@@ -316,6 +323,9 @@ async fn persist_candidate_no_vector(
                             status: r.get(5)?,
                             trust: r.get(6)?,
                             created_at: r.get(7)?,
+                            updated_at: r.get(8)?,
+                            summary_text: r.get(9)?,
+                            summary_tokens: r.get(10).unwrap_or(0),
                         })
                     },
                 )?;
@@ -353,8 +363,9 @@ async fn persist_candidate_no_vector(
             )?;
             let id = conn.last_insert_rowid();
             conn.execute(
-                "INSERT INTO memory_versions (memory_id, version, text, text_hash, created_at)
-                 VALUES (?1, 1, ?2, ?3, ?4)",
+                "INSERT INTO memory_versions (memory_id, version, text, text_hash, source_turn_id,
+                        supersedes_version, change_reason, diff_json, created_by, created_at)
+                 VALUES (?1, 1, ?2, ?3, NULL, NULL, NULL, NULL, NULL, ?4)",
                 rusqlite::params![id, &cand.text, &hash, now],
             )?;
             Ok(PersistReport {
@@ -367,6 +378,9 @@ async fn persist_candidate_no_vector(
                     status: status.into(),
                     trust: trust.into(),
                     created_at: now,
+                    updated_at: now,
+                    summary_text: None,
+                    summary_tokens: 0,
                 },
                 deduped: false,
             })
