@@ -5,7 +5,7 @@
 
 mod common;
 
-use agos_memory::config::{Config, EmbedConfig, EmbedProvider, RecallConfig};
+use agos_memory::config::{Config, EmbedProvider};
 use agos_memory::error::Result;
 use agos_memory::recall::{RecallQuery, recall};
 use agos_memory::storage::StoreHandle;
@@ -17,16 +17,11 @@ const QUERY: &str = "vehicle maintenance log";
 /// Config with no embedder (degraded mode)
 fn degraded_config() -> Config {
     let mut cfg = Config::default();
-    cfg.embed = agos_memory::config::EmbedConfig {
-        provider: EmbedProvider::None,
-        ..Default::default()
-    };
+    cfg.embed.provider = EmbedProvider::None;
     cfg
 }
 
-fn query() -> RecallQuery {
-    RecallQuery::new(QUERY, &RecallConfig::default())
-}
+
 
 /// Insert a semantic memory by direct SQL and return its public_id.
 async fn seed(store: &StoreHandle, text: &str) -> String {
@@ -50,7 +45,7 @@ async fn seed(store: &StoreHandle, text: &str) -> String {
             )?;
             let id = conn.last_insert_rowid();
             // Insert a unit vector for vec leg matching (won't be used in degraded mode)
-            let blob: Vec<u8> = (0..1536).map(|_| 1.0f32.to_le_bytes()).flatten().collect();
+            let blob: Vec<u8> = (0..1536).flat_map(|_| 1.0f32.to_le_bytes()).collect();
             conn.execute(
                 "INSERT INTO vec_memories(rowid, embedding, tier, status, trust, kind, pinned)
                  VALUES (?1, ?2, 'semantic', 0, 0, 'fact', 0)",
@@ -77,7 +72,7 @@ async fn degraded_bm25_only_when_embedder_unavailable() -> Result<()> {
     // Should get results from BM25 only
     assert!(!report.no_hit, "should find results via BM25");
     assert!(report.degraded, "report should be marked as degraded");
-    assert!(report.hits.len() >= 1, "should have at least one hit");
+    assert!(!report.hits.is_empty(), "should have at least one hit");
     Ok(())
 }
 

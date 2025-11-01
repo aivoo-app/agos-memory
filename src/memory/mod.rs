@@ -6,14 +6,17 @@
 //! - jobs/worker, extractor, persist/dedup, trust/redact — land in 0026..0029
 //! - [`remember`] — the public entry: one fact in, one memory out
 
+pub mod consolidate;
 pub mod extract;
 pub mod jobs;
 pub mod persist;
 pub mod redact;
 pub mod sessions;
 pub mod summarize;
+pub mod ttl_reaper;
 pub mod worker;
 
+pub use consolidate::run_consolidation_job;
 pub use extract::Candidate;
 pub use jobs::{JobRow, dead_count, enqueue};
 pub use persist::{
@@ -23,6 +26,7 @@ pub use persist::{
 pub use redact::{REDACTED, redact};
 pub use sessions::{SessionRow, TurnRow};
 pub use summarize::{SummarizeReport, run_summarization_job, summarize_by_id, summarize_tier};
+pub use ttl_reaper::run_ttl_reaper;
 
 /// Confidence below this → `status='pending'` instead of `active` (D-pending).
 pub const PENDING_THRESHOLD_DEFAULT: f64 = 0.4;

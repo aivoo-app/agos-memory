@@ -3,17 +3,15 @@
 //! Measures end-to-end `recall()` latency and per-stage breakdown:
 //! embed, vec scan, bm25, rerank, pack. Uses HashEmbedder for offline bench.
 
-use agos_memory::config::{Config, EmbedConfig, EmbedProvider, RecallConfig};
+use agos_memory::config::{Config, EmbedProvider, RecallConfig};
 use agos_memory::embed::{Embedder, HashEmbedder};
-use agos_memory::error::Result;
 use agos_memory::recall::{RecallQuery, recall};
 use agos_memory::storage::StoreHandle;
 use agos_memory::util::{clock::Clock, sha256_hex};
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::sync::Arc;
 use std::time::Instant;
 use tempfile::tempdir;
-use tokio::runtime::Runtime;
 
 const VECTOR_DIM: usize = 1536;
 const NUM_VECTORS: usize = 1_000;
@@ -22,13 +20,14 @@ const QUERY: &str = "vehicle maintenance log";
 /// Build a test database with NUM_VECTORS memories and matching vec_memories entries.
 async fn setup_bench_db() -> (StoreHandle, tempfile::TempDir) {
     let dir = tempdir().unwrap();
-    let mut cfg = Config::default();
-    cfg.db_path = dir.path().join("bench.db");
-    cfg.embed = EmbedConfig {
-        provider: EmbedProvider::None, // degraded keyword-only, no embedder needed for vec_memories
+    let cfg = Config {
+        db_path: dir.path().join("bench.db"),
+        embed: agos_memory::config::EmbedConfig {
+            provider: EmbedProvider::None, // degraded keyword-only, no embedder needed for vec_memories
+            ..Default::default()
+        },
         ..Default::default()
     };
-    cfg.recall = RecallConfig::default();
 
     let store = StoreHandle::open(&cfg, 4).await.expect("open store");
 
@@ -56,8 +55,7 @@ async fn setup_bench_db() -> (StoreHandle, tempfile::TempDir) {
 
                 // Insert matching unit vector in vec_memories
                 let blob: Vec<u8> = (0..VECTOR_DIM)
-                    .map(|_| 1.0f32.to_le_bytes())
-                    .flatten()
+                    .flat_map(|_| 1.0f32.to_le_bytes())
                     .collect();
                 conn.execute(
                     "INSERT INTO vec_memories(rowid, embedding, tier, status, trust, kind, pinned)
@@ -109,8 +107,10 @@ fn bench_recall_stages(c: &mut Criterion) {
     group.bench_function("vec_scan_degraded", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let mut cfg = RecallConfig::default();
-                cfg.trust_policy = agos_memory::config::TrustPolicy::Strict;
+                let cfg = agos_memory::config::RecallConfig {
+                    trust_policy: agos_memory::config::TrustPolicy::Strict,
+                    ..Default::default()
+                };
                 // Force degraded by using no embedder path - we'll just measure the FTS path
                 let query = RecallQuery::new(QUERY, &cfg);
                 // This will use FTS only since embedder is none

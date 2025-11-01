@@ -13,9 +13,7 @@
 use crate::config::Config;
 use crate::error::Result;
 use crate::llm::ChatClient;
-use crate::memory::extract::Candidate;
 use crate::storage::{MemoryRow, StoreHandle};
-use crate::util::SystemClock;
 use crate::util::clock::Clock;
 use crate::util::tokens::HeuristicCounter;
 use crate::util::tokens::TokenCounter;
@@ -49,7 +47,7 @@ pub struct SummarizeReport {
 pub async fn summarize_by_id(
     store: &StoreHandle,
     llm: &Arc<dyn ChatClient>,
-    config: &Config,
+    _config: &Config,
     memory_id: i64,
     force: bool,
 ) -> Result<SummarizeReport> {
@@ -58,8 +56,9 @@ pub async fn summarize_by_id(
         crate::error::Error::InvalidInput(format!("memory {} not found", memory_id))
     })?;
 
+    let overwrote = memory.summary_text.is_some();
     // Check if already has summary
-    if !force && memory.summary_text.is_some() {
+    if !force && overwrote {
         return Err(crate::error::Error::InvalidInput(
             "memory already has a summary; use --force to overwrite".to_string(),
         ));
@@ -93,7 +92,7 @@ pub async fn summarize_by_id(
         memory: updated_memory,
         summary_text,
         summary_tokens,
-        overwrote: false,
+        overwrote,
     })
 }
 
@@ -117,7 +116,8 @@ pub async fn summarize_tier(
     let memories: Vec<MemoryRow> = store
         .read(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, public_id, tier, kind, text, status, trust, created_at, updated_at
+                "SELECT id, public_id, tier, kind, text, status, trust, created_at, updated_at,
+                        summary_text, summary_tokens
                  FROM memories
                  WHERE tier = ?1
                    AND summary_text IS NULL

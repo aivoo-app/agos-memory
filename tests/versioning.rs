@@ -2,7 +2,7 @@
 //! supersedes chain, rollback creates new head, old chain intact.
 
 use agos_memory::config::Config;
-use agos_memory::storage::{MemoryRow, MemoryVersion, StoreHandle};
+use agos_memory::storage::StoreHandle;
 
 fn test_config(path: &std::path::Path) -> Config {
     Config {

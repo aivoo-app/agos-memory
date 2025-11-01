@@ -43,6 +43,34 @@ pub struct MemoryVersion {
     pub created_at: i64,
 }
 
+/// A tombstone row (hard-purged memory record).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TombstoneRow {
+    pub id: i64,
+    pub public_id: String,
+    pub agent_id: String,
+    pub memory_id: Option<i64>,
+    pub text_hash: String,
+    pub deleted_at: i64,
+    pub deleted_by: Option<String>,
+    pub reason: Option<String>,
+    pub rowcount_before: i64,
+    pub rowcount_after: i64,
+    pub vacuum_duration_ms: i64,
+}
+
+/// A forget_audit row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForgetAuditRow {
+    pub id: i64,
+    pub action: String,
+    pub selector_json: String,
+    pub memory_ids: String,
+    pub requester: String,
+    pub reason: Option<String>,
+    pub created_at: i64,
+}
+
 /// A single memory row as read back from storage.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemoryRow {
@@ -453,7 +481,7 @@ impl StoreHandle {
                     rusqlite::params![id, &m.text, &text_hash, now],
                 )?;
                 Ok(MemoryRow {
-                    id: id,
+                    id,
                     public_id: pid,
                     tier: m.tier.clone(),
                     kind: m.kind.clone(),
@@ -743,26 +771,77 @@ impl StoreHandle {
     /// Soft-deprecate a memory: sets `status = 'deprecated'`, `deleted_at = now`.
     /// Memory is excluded from recall (hard filter already excludes deprecated).
     /// Recoverable via `restore_memory`.
-    pub async fn deprecate_memory(&self, memory_id: i64) -> Result<()> {
+    ///
+    /// Also writes a `forget_audit` row (action = 'deprecate').
+    pub async fn deprecate_memory(&self, memory_id: i64, deleted_by: Option<&str>) -> Result<()> {
         let now = crate::util::SystemClock.now_millis();
+        let _agent_id = self.inner.agent_id.clone();
+        let deleted_by_owned = deleted_by.map(|s| s.to_string());
         self.write(move |conn| {
+            // Fetch public_id before update for the audit row
+            let public_id: Option<String> = conn
+                .query_row(
+                    "SELECT public_id FROM memories WHERE id = ?1",
+                    [memory_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
             conn.execute(
                 "UPDATE memories SET status = 'deprecated', deleted_at = ?1, updated_at = ?2 WHERE id = ?3",
                 rusqlite::params![now, now, memory_id],
             )?;
+            // Write audit row
+            if let Some(pid) = public_id {
+                conn.execute(
+                    "INSERT INTO forget_audit (action, selector_json, memory_ids, requester, reason, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![
+                        "deprecate",
+                        &format!("{{\"memory_id\":{}}}", memory_id),
+                        &pid,
+                        deleted_by_owned.as_deref().unwrap_or("agent"),
+                        None::<&str>,
+                        now,
+                    ],
+                )?;
+            }
             Ok(())
         })
         .await
     }
 
     /// Restore a soft-deprecated memory back to active.
-    pub async fn restore_memory(&self, memory_id: i64) -> Result<()> {
+    /// Also writes a `forget_audit` row (action = 'restore').
+    pub async fn restore_memory(&self, memory_id: i64, restored_by: Option<&str>) -> Result<()> {
         let now = crate::util::SystemClock.now_millis();
+        let _agent_id = self.inner.agent_id.clone();
+        let restored_by_owned = restored_by.map(|s| s.to_string());
         self.write(move |conn| {
+            let public_id: Option<String> = conn
+                .query_row(
+                    "SELECT public_id FROM memories WHERE id = ?1",
+                    [memory_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
             conn.execute(
                 "UPDATE memories SET status = 'active', deleted_at = NULL, updated_at = ?1 WHERE id = ?2",
                 rusqlite::params![now, memory_id],
             )?;
+            if let Some(pid) = public_id {
+                conn.execute(
+                    "INSERT INTO forget_audit (action, selector_json, memory_ids, requester, reason, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![
+                        "restore",
+                        &format!("{{\"memory_id\":{}}}", memory_id),
+                        &pid,
+                        restored_by_owned.as_deref().unwrap_or("agent"),
+                        None::<&str>,
+                        now,
+                    ],
+                )?;
+            }
             Ok(())
         })
         .await
@@ -770,6 +849,8 @@ impl StoreHandle {
 
     /// Hard purge: deletes from memories, memory_versions, memory_links,
     /// vec_memories, and inserts a tombstone row. Runs VACUUM.
+    ///
+    /// Also writes a `forget_audit` row (action = 'hard_delete').
     pub async fn hard_purge_memory(
         &self,
         memory_id: i64,
@@ -840,6 +921,20 @@ impl StoreHandle {
                     reason_owned.as_deref(),
                     rowcount_before,
                     rowcount_after,
+                ],
+            )?;
+
+            // Write audit row
+            conn.execute(
+                "INSERT INTO forget_audit (action, selector_json, memory_ids, requester, reason, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    "hard_delete",
+                    &format!("{{\"memory_id\":{}}}", memory_id),
+                    &public_id,
+                    deleted_by_owned.as_deref().unwrap_or("agent"),
+                    reason_owned.as_deref(),
+                    now,
                 ],
             )?;
 
@@ -956,6 +1051,247 @@ impl StoreHandle {
                 rusqlite::params![cutoff, min_use_count, limit],
             )?;
             Ok(deleted as i64)
+        })
+        .await
+    }
+
+    /// List all tombstone rows (hard-purged memories).
+    pub async fn list_tombstones(&self) -> Result<Vec<TombstoneRow>> {
+        self.read(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, public_id, agent_id, memory_id, text_hash, deleted_at,
+                        deleted_by, reason, rowcount_before, rowcount_after, vacuum_duration_ms
+                 FROM tombstones ORDER BY id DESC",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(TombstoneRow {
+                    id: r.get(0)?,
+                    public_id: r.get(1)?,
+                    agent_id: r.get(2)?,
+                    memory_id: r.get(3)?,
+                    text_hash: r.get(4)?,
+                    deleted_at: r.get(5)?,
+                    deleted_by: r.get(6)?,
+                    reason: r.get(7)?,
+                    rowcount_before: r.get(8)?,
+                    rowcount_after: r.get(9)?,
+                    vacuum_duration_ms: r.get(10).unwrap_or(0),
+                })
+            })?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+        .await
+    }
+
+    /// List forget_audit rows, optionally filtered by action and/or since a timestamp.
+    pub async fn list_forget_audit(
+        &self,
+        action: Option<String>,
+        since: Option<i64>,
+        limit: Option<i64>,
+    ) -> Result<Vec<ForgetAuditRow>> {
+        self.read(move |conn| {
+            let mut sql = String::from(
+                "SELECT id, action, selector_json, memory_ids, requester, reason, created_at
+                 FROM forget_audit WHERE 1 = 1",
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+            if let Some(a) = &action {
+                sql.push_str(" AND action = ?");
+                params.push(Box::new(a.clone()));
+            }
+            if let Some(s) = since {
+                sql.push_str(" AND created_at >= ?");
+                params.push(Box::new(s));
+            }
+            sql.push_str(" ORDER BY id DESC");
+            if let Some(l) = limit {
+                sql.push_str(&format!(" LIMIT {}", l));
+            }
+            let mut stmt = conn.prepare(&sql)?;
+            let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            let rows = stmt.query_map(rusqlite::params_from_iter(param_refs.iter()), |r| {
+                Ok(ForgetAuditRow {
+                    id: r.get(0)?,
+                    action: r.get(1)?,
+                    selector_json: r.get(2)?,
+                    memory_ids: r.get(3)?,
+                    requester: r.get(4)?,
+                    reason: r.get(5)?,
+                    created_at: r.get(6)?,
+                })
+            })?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+        .await
+    }
+
+    /// Find orphaned memory_versions rows (not referenced by any memories row).
+    /// Returns the count of deleted rows.
+    pub async fn delete_orphaned_versions(&self) -> Result<i64> {
+        self.write(move |conn| {
+            let n = conn.execute(
+                "DELETE FROM memory_versions
+                 WHERE memory_id NOT IN (SELECT id FROM memories)",
+                [],
+            )?;
+            Ok(n as i64)
+        })
+        .await
+    }
+
+    /// Find memories eligible for dedup consolidation.
+    /// Returns (memory_id, public_id, tier, text, text_hash) for all active memories.
+    pub async fn all_active_memories_for_dedup(
+        &self,
+    ) -> Result<Vec<(i64, String, String, String, String)>> {
+        self.read(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, public_id, tier, text, text_hash
+                 FROM memories
+                 WHERE status = 'active'
+                 ORDER BY tier, id",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+        .await
+    }
+
+    /// Update dedup_cluster_id for a memory.
+    pub async fn set_dedup_cluster(&self, memory_id: i64, cluster_id: &str) -> Result<()> {
+        let now = crate::util::SystemClock.now_millis();
+        let cid = cluster_id.to_string();
+        self.write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET dedup_cluster_id = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![&cid, now, memory_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Bump ref_count and last_referenced_at for a memory (dedup consolidation).
+    pub async fn bump_ref_count(&self, memory_id: i64) -> Result<()> {
+        let now = crate::util::SystemClock.now_millis();
+        self.write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET ref_count = ref_count + 1, last_referenced_at = ?1
+                 WHERE id = ?2",
+                rusqlite::params![now, memory_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// List memories by tier, optionally filtered by status.
+    pub async fn list_memories(
+        &self,
+        tier: Option<String>,
+        status: Option<String>,
+        limit: Option<i64>,
+    ) -> Result<Vec<MemoryRow>> {
+        self.read(move |conn| {
+            let mut sql = String::from(
+                "SELECT id, public_id, tier, kind, text, status, trust, created_at, updated_at,
+                        summary_text, summary_tokens
+                 FROM memories WHERE 1 = 1",
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+            if let Some(t) = &tier {
+                sql.push_str(" AND tier = ?");
+                params.push(Box::new(t.clone()));
+            }
+            if let Some(s) = &status {
+                sql.push_str(" AND status = ?");
+                params.push(Box::new(s.clone()));
+            }
+            sql.push_str(" ORDER BY id");
+            if let Some(l) = limit {
+                sql.push_str(&format!(" LIMIT {}", l));
+            }
+            let mut stmt = conn.prepare(&sql)?;
+            let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            let rows = stmt.query_map(rusqlite::params_from_iter(param_refs.iter()), |r| {
+                Ok(MemoryRow {
+                    id: r.get(0)?,
+                    public_id: r.get(1)?,
+                    tier: r.get(2)?,
+                    kind: r.get(3)?,
+                    text: r.get(4)?,
+                    status: r.get(5)?,
+                    trust: r.get(6)?,
+                    created_at: r.get(7)?,
+                    updated_at: r.get(8)?,
+                    summary_text: r.get(9)?,
+                    summary_tokens: r.get(10).unwrap_or(0),
+                })
+            })?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+        .await
+    }
+
+    /// Find active memories whose TTL has expired.
+    ///
+    /// `ttl_days` is a function of tier; the caller passes per-tier TTLs
+    /// (0 = never expires). Returns (memory_id, public_id, tier) triples.
+    pub async fn expired_memories(
+        &self,
+        now_millis: i64,
+        ttl_working: i64,
+        ttl_episodic: i64,
+        ttl_semantic: i64,
+        ttl_procedural: i64,
+    ) -> Result<Vec<(i64, String, String)>> {
+        self.read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT m.id, m.public_id, m.tier
+                 FROM memories m
+                 WHERE m.status = 'active'
+                   AND (
+                       (m.tier = 'working' AND ?1 > 0 AND m.created_at + ?1 * 86400000 < ?2)
+                    OR (m.tier = 'episodic' AND ?3 > 0 AND m.created_at + ?3 * 86400000 < ?2)
+                    OR (m.tier = 'semantic'  AND ?4 > 0 AND m.created_at + ?4 * 86400000 < ?2)
+                    OR (m.tier = 'procedural' AND ?5 > 0 AND m.created_at + ?5 * 86400000 < ?2)
+                   )
+                 ORDER BY m.id",
+            )?;
+            let rows = stmt.query_map(
+                rusqlite::params![
+                    ttl_working,
+                    now_millis,
+                    ttl_episodic,
+                    ttl_semantic,
+                    ttl_procedural
+                ],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+        .await
+    }
+
+    /// Find deprecated memories older than the grace period (eligible for hard purge).
+    pub async fn deprecated_past_grace(&self, grace_millis: i64) -> Result<Vec<(i64, String)>> {
+        self.read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, public_id
+                 FROM memories
+                 WHERE status = 'deprecated'
+                   AND deleted_at IS NOT NULL
+                   AND deleted_at + ?1 < ?2
+                 ORDER BY id",
+            )?;
+            let rows = stmt.query_map(
+                rusqlite::params![grace_millis, crate::util::SystemClock.now_millis()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
         .await
     }

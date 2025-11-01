@@ -229,7 +229,7 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE TABLE IF NOT EXISTS forget_audit (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
         action        TEXT NOT NULL
-                      CHECK (action IN ('deprecate','hard_delete','expire','purge')),
+                      CHECK (action IN ('deprecate','hard_delete','expire','purge','restore','ttl_deprecate','ttl_purge')),
         selector_json TEXT NOT NULL,
         memory_ids    TEXT NOT NULL,
         requester     TEXT NOT NULL,

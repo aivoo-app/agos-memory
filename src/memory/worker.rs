@@ -12,8 +12,10 @@ use crate::error::Result;
 use crate::llm::ChatClient;
 use crate::storage::StoreHandle;
 
-use super::jobs::{self, JobRow, POLL_INTERVAL};
+use super::consolidate::run_consolidation_job;
+use super::jobs::JobRow;
 use super::summarize::run_summarization_job;
+use super::ttl_reaper::run_ttl_reaper;
 
 /// Handler for one job kind: processes the payload, errors on failure.
 pub type Handler = Arc<
@@ -48,8 +50,28 @@ impl Worker {
         };
         // Register built-in handlers
         worker.on("summarize", |_job, store, llm, config| {
+            let store = store.clone();
+            let llm = llm.clone();
+            let config = config.clone();
             Box::pin(async move {
-                super::summarize::run_summarization_job(&store, &llm, &config).await?;
+                run_summarization_job(&store, &llm, &config).await?;
+                Ok(())
+            })
+        });
+        worker.on("consolidate", |_job, store, llm, config| {
+            let store = store.clone();
+            let llm = llm.clone();
+            let config = config.clone();
+            Box::pin(async move {
+                run_consolidation_job(&store, &llm, &config).await?;
+                Ok(())
+            })
+        });
+        worker.on("maintain", |_job, store, _llm, config| {
+            let store = store.clone();
+            let config = config.clone();
+            Box::pin(async move {
+                run_ttl_reaper(&store, &config).await?;
                 Ok(())
             })
         });

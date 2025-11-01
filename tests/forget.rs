@@ -30,9 +30,13 @@ async fn soft_deprecate_hides_from_recall() {
         .unwrap();
 
     let row = make_memory(&store, "remember this").await;
-    store.deprecate_memory(row.id).await.unwrap();
+    store.deprecate_memory(row.id, Some("test")).await.unwrap();
 
-    let got = store.get_memory(row.public_id.clone()).await.unwrap().unwrap();
+    let got = store
+        .get_memory(row.public_id.clone())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(got.status, "deprecated", "memory should be deprecated");
 }
 
@@ -44,10 +48,14 @@ async fn restore_after_soft_deprecate_works() {
         .unwrap();
 
     let row = make_memory(&store, "test restore").await;
-    store.deprecate_memory(row.id).await.unwrap();
-    store.restore_memory(row.id).await.unwrap();
+    store.deprecate_memory(row.id, Some("test")).await.unwrap();
+    store.restore_memory(row.id, Some("test")).await.unwrap();
 
-    let got = store.get_memory(row.public_id.clone()).await.unwrap().unwrap();
+    let got = store
+        .get_memory(row.public_id.clone())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(got.status, "active");
     assert_eq!(got.text, "test restore");
 }
@@ -105,7 +113,10 @@ async fn hard_purge_on_already_deleted_returns_error() {
     let result = store
         .hard_purge_memory(row.id, Some("test"), Some("second"))
         .await;
-    assert!(result.is_err(), "purge of already-deleted memory should fail");
+    assert!(
+        result.is_err(),
+        "purge of already-deleted memory should fail"
+    );
 }
 
 #[tokio::test]
@@ -141,15 +152,13 @@ async fn forget_audit_records_action() {
         .unwrap();
 
     let row = make_memory(&store, "audit test").await;
-    store.deprecate_memory(row.id).await.unwrap();
+    store.deprecate_memory(row.id, Some("test")).await.unwrap();
 
     let status: String = store
         .read(move |conn| {
-            conn.query_row(
-                "SELECT status FROM memories WHERE id = ?1",
-                [row.id],
-                |r| r.get::<_, String>(0),
-            )
+            conn.query_row("SELECT status FROM memories WHERE id = ?1", [row.id], |r| {
+                r.get::<_, String>(0)
+            })
             .map_err(|e| agos_memory::error::Error::Storage(e.to_string()))
         })
         .await
@@ -165,9 +174,13 @@ async fn soft_deprecate_then_hard_purge_works() {
         .unwrap();
 
     let row = make_memory(&store, "soft then hard").await;
-    store.deprecate_memory(row.id).await.unwrap();
+    store.deprecate_memory(row.id, Some("test")).await.unwrap();
 
-    let got = store.get_memory(row.public_id.clone()).await.unwrap().unwrap();
+    let got = store
+        .get_memory(row.public_id.clone())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(got.status, "deprecated");
 
     store

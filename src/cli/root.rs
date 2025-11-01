@@ -6,7 +6,6 @@ use rusqlite::Connection;
 use crate::config::{
     BudgetSplit, Config, RecallConfig, RecallHalfLives, RecallWeights, TrustPolicy,
 };
-use crate::embed::embedder_from_config;
 use crate::error::Result;
 use crate::recall::RecallQuery;
 use crate::storage::schema;
@@ -123,6 +122,75 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Manage memory lifecycle: deprecate, restore, purge, audit.
+    Forget {
+        #[command(subcommand)]
+        cmd: ForgetCmd,
+    },
+    /// Summarize memories (on-demand).
+    Summarize {
+        /// Summarize a single memory by public id.
+        #[arg(long)]
+        id: Option<String>,
+        /// Summarize all memories in a tier.
+        #[arg(long)]
+        tier: Option<String>,
+        /// Summarize all memories without a summary.
+        #[arg(long)]
+        all: bool,
+        /// Overwrite existing summaries.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Run maintenance jobs (TTL reaper, consolidation).
+    Maintain {
+        /// Run the TTL reaper now.
+        #[arg(long)]
+        ttl: bool,
+        /// Run consolidation now.
+        #[arg(long)]
+        consolidate: bool,
+    },
+}
+
+/// Forget subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ForgetCmd {
+    /// Soft-deprecate a memory (restorable).
+    Soft {
+        /// Public id of the memory to deprecate.
+        id: String,
+        /// Reason for deprecation.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Restore a soft-deprecated memory.
+    Restore {
+        /// Public id of the memory to restore.
+        id: String,
+    },
+    /// Hard-purge a memory (irreversible).
+    Hard {
+        /// Public id of the memory to purge.
+        id: String,
+        /// Reason for purge.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// List forget audit entries.
+    ListAudit {
+        /// Filter by action (deprecate, restore, hard_delete, ttl_deprecate, ttl_purge).
+        #[arg(long)]
+        action: Option<String>,
+        /// Only show entries since this timestamp (epoch millis).
+        #[arg(long)]
+        since: Option<i64>,
+        /// Limit number of results.
+        #[arg(long)]
+        limit: Option<i64>,
+    },
+    /// List tombstones (hard-purged memories).
+    ListTombstones,
 }
 
 /// Session subcommands.
@@ -209,6 +277,14 @@ pub async fn run(cli: Cli) -> Result<()> {
             min_mrr,
             json,
         } => eval_cmd(&cfg, file, min_precision, min_recall, min_mrr, json).await,
+        Command::Forget { cmd } => forget_cmd(&cfg, cmd).await,
+        Command::Summarize {
+            id,
+            tier,
+            all,
+            force,
+        } => summarize_cmd(&cfg, id, tier, all, force).await,
+        Command::Maintain { ttl, consolidate } => maintain_cmd(&cfg, ttl, consolidate).await,
     }
 }
 
@@ -315,6 +391,7 @@ async fn doctor(cfg: &Config) -> Result<()> {
 }
 
 /// `recall` CLI command — runs hybrid recall and prints results.
+#[allow(clippy::too_many_arguments)]
 async fn recall_cmd(
     cfg: &Config,
     text: String,
@@ -537,3 +614,153 @@ async fn eval_cmd(
 // `defaults` is re-exported for binary consumers; keep the import referenced.
 #[allow(unused_imports)]
 use defaults as _defaults;
+
+/// `forget` CLI command — manage memory lifecycle.
+async fn forget_cmd(cfg: &Config, cmd: ForgetCmd) -> Result<()> {
+    let store = crate::storage::StoreHandle::open(cfg, defaults::READ_POOL_SIZE).await?;
+    match cmd {
+        ForgetCmd::Soft { id, reason } => {
+            let row = store.get_memory(id.clone()).await?.ok_or_else(|| {
+                crate::error::Error::InvalidInput(format!("memory {id} not found"))
+            })?;
+            store.deprecate_memory(row.id, Some("agent")).await?;
+            println!("deprecated: {} ({})", row.public_id, row.status);
+            if let Some(r) = reason {
+                println!("reason: {r}");
+            }
+        }
+        ForgetCmd::Restore { id } => {
+            let row = store.get_memory(id.clone()).await?.ok_or_else(|| {
+                crate::error::Error::InvalidInput(format!("memory {id} not found"))
+            })?;
+            store.restore_memory(row.id, Some("agent")).await?;
+            println!("restored: {} ({})", row.public_id, row.status);
+        }
+        ForgetCmd::Hard { id, reason } => {
+            let row = store.get_memory(id.clone()).await?.ok_or_else(|| {
+                crate::error::Error::InvalidInput(format!("memory {id} not found"))
+            })?;
+            store
+                .hard_purge_memory(row.id, Some("agent"), reason.as_deref())
+                .await?;
+            println!("hard-purged: {} (tombstone written)", row.public_id);
+        }
+        ForgetCmd::ListAudit {
+            action,
+            since,
+            limit,
+        } => {
+            let entries = store.list_forget_audit(action, since, limit).await?;
+            println!("forget_audit entries: {}", entries.len());
+            for e in &entries {
+                println!(
+                    "  [{}] {} by {} at {}{}",
+                    e.id,
+                    e.action,
+                    e.requester,
+                    e.created_at,
+                    e.reason
+                        .as_deref()
+                        .map(|r| format!(" ({r})"))
+                        .unwrap_or_default()
+                );
+            }
+        }
+        ForgetCmd::ListTombstones => {
+            let tombstones = store.list_tombstones().await?;
+            println!("tombstones: {}", tombstones.len());
+            for t in &tombstones {
+                println!(
+                    "  [{}] {} (deleted_at={}, by={:?})",
+                    t.id, t.public_id, t.deleted_at, t.deleted_by
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `summarize` CLI command — on-demand summarization.
+async fn summarize_cmd(
+    cfg: &Config,
+    id: Option<String>,
+    tier: Option<String>,
+    all: bool,
+    force: bool,
+) -> Result<()> {
+    use crate::llm::MockChat;
+    use crate::memory::summarize_by_id;
+    use crate::memory::summarize_tier;
+
+    let store = crate::storage::StoreHandle::open(cfg, defaults::READ_POOL_SIZE).await?;
+    let llm: std::sync::Arc<dyn crate::llm::ChatClient> = std::sync::Arc::new(MockChat::default());
+
+    if let Some(pid) = id {
+        let row = store
+            .get_memory(pid.clone())
+            .await?
+            .ok_or_else(|| crate::error::Error::InvalidInput(format!("memory {pid} not found")))?;
+        let report = summarize_by_id(&store, &llm, cfg, row.id, force).await?;
+        println!(
+            "summarized: {} ({} tokens)",
+            report.memory.public_id, report.summary_tokens
+        );
+        println!("summary: {}", report.summary_text);
+    } else if let Some(t) = tier {
+        let reports = summarize_tier(&store, &llm, cfg, &t).await?;
+        println!("summarized {} memories in tier '{}'", reports.len(), t);
+        for r in &reports {
+            println!("  {} ({} tokens)", r.memory.public_id, r.summary_tokens);
+        }
+    } else if all {
+        // Summarize all tiers
+        let mut total = 0;
+        for tier in ["working", "episodic", "semantic", "procedural"] {
+            let reports = summarize_tier(&store, &llm, cfg, tier).await?;
+            total += reports.len();
+            for r in &reports {
+                println!(
+                    "  [{}] {} ({} tokens)",
+                    tier, r.memory.public_id, r.summary_tokens
+                );
+            }
+        }
+        println!("summarized {} memories total", total);
+    } else {
+        return Err(crate::error::Error::InvalidInput(
+            "specify --id, --tier, or --all".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// `maintain` CLI command — run maintenance jobs.
+async fn maintain_cmd(cfg: &Config, ttl: bool, consolidate: bool) -> Result<()> {
+    let store = crate::storage::StoreHandle::open(cfg, defaults::READ_POOL_SIZE).await?;
+    use crate::llm::MockChat;
+
+    if ttl {
+        let report = crate::memory::run_ttl_reaper(&store, cfg).await?;
+        println!(
+            "TTL reaper: {} soft-deprecated, {} hard-purged",
+            report.soft_deprecated, report.hard_purged
+        );
+    }
+
+    if consolidate {
+        let llm: std::sync::Arc<dyn crate::llm::ChatClient> =
+            std::sync::Arc::new(MockChat::default());
+        let report = crate::memory::run_consolidation_job(&store, &llm, cfg).await?;
+        println!(
+            "Consolidation: {} summaries, {} dedup merges, {} orphans deleted",
+            report.summaries_generated, report.dedup_clusters_merged, report.orphans_deleted
+        );
+    }
+
+    if !ttl && !consolidate {
+        return Err(crate::error::Error::InvalidInput(
+            "specify --ttl and/or --consolidate".into(),
+        ));
+    }
+    Ok(())
+}

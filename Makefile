@@ -100,4 +100,12 @@ gate-v0.3.0: ## v0.3.0 milestone gate (fmt + clippy -D + tests + plan-guard + bu
 	$(MAKE) eval
 	$(MAKE) bench
 
+gate-v0.4.0: ## v0.4.0 milestone gate (fmt + clippy -D + tests + plan-guard + build + smoke)
+	cargo fmt --all -- --check
+	cargo clippy --all-targets -- -D warnings
+	cargo test --all-targets
+	$(MAKE) plan-guard
+	cargo build --release
+	$(MAKE) smoke
+
 ci: plan-guard check ## CI pipeline (offline; no provider access needed)
