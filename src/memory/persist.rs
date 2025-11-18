@@ -51,8 +51,11 @@ pub async fn persist_candidate<E: Embedder>(
 }
 
 /// Full variant with provenance + thresholds (issue 0029).
+///
+/// `E: ?Sized` so callers holding an owned `Box<dyn Embedder>` (CLI, eval
+/// runner) can pass `&*embedder` without cloning the embedder.
 #[allow(clippy::too_many_arguments)]
-pub async fn persist_candidate_full<E: Embedder>(
+pub async fn persist_candidate_full<E: Embedder + ?Sized>(
     store: &StoreHandle,
     cand: &Candidate,
     embedder: &E,
@@ -71,6 +74,11 @@ pub async fn persist_candidate_full<E: Embedder>(
     let cand = cand.clone();
     let ver = extractor_version.to_string();
     let source_owned = source_kind.to_string();
+    // Multi-agent isolation (D11/R8): every memory is stamped with the store's
+    // agent. Omitting this column silently fell back to the schema default
+    // `'default'`, which made writes invisible to recall for any other agent
+    // (found by the end-to-end eval harness, issue 0052).
+    let agent_owned = store.agent_id().to_string();
     let report = store
         .write(move |conn| {
             let now = Clock::now_millis(&SystemClock);
@@ -166,13 +174,14 @@ pub async fn persist_candidate_full<E: Embedder>(
                 _ => unreachable!(),
             };
             conn.execute(
-                "INSERT INTO memories (public_id, tier, kind, text, text_hash,
+                "INSERT INTO memories (public_id, agent_id, tier, kind, text, text_hash,
                  status, trust, source_kind, extractor_version, embed_model,
                  embed_dim, embed_status, ref_count, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                 ?9, ?10, ?11, 'ok', 0, ?12, ?12)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                 ?10, ?11, ?12, 'ok', 0, ?13, ?13)",
                 rusqlite::params![
                     &pid2,
+                    &agent_owned,
                     &cand.tier,
                     &cand.kind,
                     &cand.text,
@@ -284,6 +293,8 @@ async fn persist_candidate_no_vector(
     cand.text = crate::memory::redact::redact(&cand.text);
     let ver = extractor_version.to_string();
     let source_owned = source_kind.to_string();
+    // Same agent stamping as the embedded path (see `persist_candidate_full`).
+    let agent_owned = store.agent_id().to_string();
     let report = store
         .write(move |conn| {
             let now = Clock::now_millis(&SystemClock);
@@ -343,12 +354,13 @@ async fn persist_candidate_no_vector(
                 "active"
             };
             conn.execute(
-                "INSERT INTO memories (public_id, tier, kind, text, text_hash,
+                "INSERT INTO memories (public_id, agent_id, tier, kind, text, text_hash,
                  status, trust, source_kind, extractor_version, embed_status,
                  ref_count, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?11)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?12)",
                 rusqlite::params![
                     &pid,
+                    &agent_owned,
                     &cand.tier,
                     &cand.kind,
                     &cand.text,
