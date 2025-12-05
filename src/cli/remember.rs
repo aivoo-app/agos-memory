@@ -38,6 +38,26 @@ pub async fn run_remember(
             )
             .await?
         }
+        EmbedProvider::Hash => {
+            // Deterministic offline embedder (evals, benchmarks, local dev):
+            // same hybrid path as production, no provider involved.
+            let dim = store.embed_dim().await?;
+            let embedder = crate::embed::HashEmbedder::new(dim);
+            store.validate_embed_dim(&embedder).await?;
+            memory::remember(
+                &store,
+                tier,
+                kind,
+                text,
+                source_kind,
+                confidence,
+                &embedder,
+                observe::EXTRACTOR_VERSION,
+                cfg.memory.pending_threshold,
+                cfg.memory.dedup_threshold,
+            )
+            .await?
+        }
         EmbedProvider::OpenAiCompat => {
             if cfg.embed.model.is_empty() {
                 return Err(Error::Config(

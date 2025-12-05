@@ -22,6 +22,12 @@ pub enum EmbedProvider {
     /// OpenAI-compatible `/v1/embeddings` endpoint (default; point at agos-proxy).
     #[serde(rename = "openai_compat")]
     OpenAiCompat,
+    /// Deterministic in-process hash embedder (`HashEmbedder`).
+    ///
+    /// Offline and reproducible: used by the eval harness and benchmarks so the
+    /// full hybrid path (vector leg + BM25) is exercised without a provider.
+    /// **Not** a production embedding model — it is a lexical similarity proxy.
+    Hash,
     /// No embeddings: degraded keyword-only mode (FTS5).
     None,
 }
