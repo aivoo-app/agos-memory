@@ -535,7 +535,12 @@ async fn explain_cmd(cfg: &Config, id: String) -> Result<()> {
     Ok(())
 }
 
-/// `eval` CLI command — runs the offline eval suite.
+/// `eval` CLI command — runs the offline eval suite end-to-end.
+///
+/// Each case gets a fresh database; its corpus is seeded through the real
+/// write path (embed + dedup + version + vector row) and scored with the real
+/// recall path (issue 0052 — no stub, no id-only corpus). Failing cases are
+/// printed so a threshold miss is actionable.
 async fn eval_cmd(
     cfg: &Config,
     file: std::path::PathBuf,
@@ -544,58 +549,16 @@ async fn eval_cmd(
     min_mrr: f64,
     json: bool,
 ) -> Result<()> {
-    use crate::eval::{CaseResult, Metrics, load_cases};
+    use crate::eval::{load_cases, run, validate_cases};
 
     let cases = load_cases(&file)?;
+    validate_cases(&cases)?;
 
-    // For each case, we need to create a temp store with the corpus memories
-    // This is complex - we'll use the existing approach from tests
-    // For now, run eval by loading memories into a fresh store per case
-
-    let mut results = Vec::new();
-
-    for case in &cases {
-        // Create a temp store for this case
-        let dir = tempfile::tempdir().unwrap();
-        let mut case_cfg = cfg.clone();
-        case_cfg.db_path = dir.path().join("eval.db");
-
-        let store = crate::storage::StoreHandle::open(&case_cfg, defaults::READ_POOL_SIZE).await?;
-
-        // Build embedder
-        let dim = store.embed_dim().await?;
-        let embedder = crate::embed::embedder_from_config(&case_cfg.embed, dim);
-        store.validate_embed_dim(&*embedder).await?;
-
-        // Insert corpus memories
-        for _mem_id in &case.corpus {
-            // We'd need the actual memory text - in practice the corpus should contain full memories
-            // For now, we'll skip this and note it's a placeholder
-            // A proper implementation would have the corpus contain the full memory data
-        }
-
-        // Run recall
-        let query = crate::recall::RecallQuery::new(case.query.clone(), &case_cfg.recall);
-        let report = crate::recall::recall(&store, &*embedder, &query).await?;
-
-        let returned: Vec<String> = report
-            .hits
-            .iter()
-            .filter(|h| h.injected())
-            .map(|h| h.public_id.clone())
-            .collect();
-
-        results.push(CaseResult {
-            returned,
-            relevant: case.relevant.clone(),
-            forbidden: case.forbidden.clone(),
-        });
-    }
-
-    let metrics = Metrics::aggregate(&results);
+    let eval = run(cfg, &cases).await?;
+    let metrics = &eval.metrics;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&metrics)?);
+        println!("{}", serde_json::to_string_pretty(metrics)?);
     } else {
         println!("precision: {:.3}", metrics.precision);
         println!("recall:    {:.3}", metrics.recall);
@@ -604,9 +567,20 @@ async fn eval_cmd(
         println!("cases:     {}", metrics.cases);
     }
 
-    metrics
-        .check(min_precision, min_recall, min_mrr)
-        .map_err(crate::error::Error::InvalidInput)?;
+    if let Err(reason) = metrics.check(min_precision, min_recall, min_mrr) {
+        for outcome in eval.imperfect() {
+            eprintln!(
+                "case {}: query={:?} missed={:?} leaked={:?} returned={:?} relevant={:?}",
+                outcome.id,
+                outcome.query,
+                outcome.missed,
+                outcome.leaked,
+                outcome.returned,
+                outcome.relevant
+            );
+        }
+        return Err(crate::error::Error::InvalidInput(reason));
+    }
 
     Ok(())
 }
