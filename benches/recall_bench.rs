@@ -1,7 +1,13 @@
-//! 0038 — Performance benchmark: 10k-vector p95 < 150 ms.
+//! 0038 — Recall performance benchmark (roadmap target: p95 < 150 ms).
 //!
 //! Measures end-to-end `recall()` latency and per-stage breakdown:
 //! embed, vec scan, bm25, rerank, pack. Uses HashEmbedder for offline bench.
+//!
+//! Corpus size defaults to 1 000 vectors (fast); set `AGOS_BENCH_VECTORS=10000`
+//! to measure the roadmap's @10k target. The p95 assertion is a **release**
+//! number: `cargo test --all-targets` also builds and runs benches in the debug
+//! profile (5-8× slower, see issue 0051), where the same code would fail a
+//! threshold it never claimed to meet. Run `cargo bench` for the gate.
 
 use agos_memory::config::{Config, EmbedProvider, RecallConfig};
 use agos_memory::embed::{Embedder, HashEmbedder};
@@ -14,10 +20,32 @@ use std::time::Instant;
 use tempfile::tempdir;
 
 const VECTOR_DIM: usize = 1536;
-const NUM_VECTORS: usize = 1_000;
+/// Default seeded corpus; override with `AGOS_BENCH_VECTORS` (e.g. `10000`).
+const DEFAULT_VECTORS: usize = 1_000;
 const QUERY: &str = "vehicle maintenance log";
 
-/// Build a test database with NUM_VECTORS memories and matching vec_memories entries.
+/// Seeded corpus size, configurable for the @10k roadmap measurement.
+fn num_vectors() -> usize {
+    std::env::var("AGOS_BENCH_VECTORS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_VECTORS)
+}
+
+/// The roadmap's p95 ceiling, in milliseconds.
+const P95_CEILING_MS: f64 = 150.0;
+
+/// Whether the p95 assertion applies to this profile.
+///
+/// True for release benches (`cargo bench`) and for explicit opt-in runs
+/// (`AGOS_BENCH_ASSERT=1 cargo test --all-targets`); false for debug test runs.
+fn should_assert_p95() -> bool {
+    !cfg!(debug_assertions) || std::env::var("AGOS_BENCH_ASSERT").as_deref() == Ok("1")
+}
+
+/// Build a test database with `num_vectors()` memories and matching
+/// vec_memories entries.
 async fn setup_bench_db() -> (StoreHandle, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let cfg = Config {
@@ -30,9 +58,11 @@ async fn setup_bench_db() -> (StoreHandle, tempfile::TempDir) {
     };
 
     let store = StoreHandle::open(&cfg, 4).await.expect("open store");
+    let num_vectors = num_vectors();
+    println!("=== recall_bench: seeding {num_vectors} vectors ===");
 
-    // Insert NUM_VECTORS memories with matching vec_memories
-    for i in 0..NUM_VECTORS {
+    // Insert memories with matching vec_memories
+    for i in 0..num_vectors {
         let text = format!("vehicle maintenance log entry {}", i);
         let pid = format!("pid-{}-{}", &sha256_hex(&text)[..12], i);
         let hash = sha256_hex(&text);
@@ -54,9 +84,7 @@ async fn setup_bench_db() -> (StoreHandle, tempfile::TempDir) {
                 let id = conn.last_insert_rowid();
 
                 // Insert matching unit vector in vec_memories
-                let blob: Vec<u8> = (0..VECTOR_DIM)
-                    .flat_map(|_| 1.0f32.to_le_bytes())
-                    .collect();
+                let blob: Vec<u8> = (0..VECTOR_DIM).flat_map(|_| 1.0f32.to_le_bytes()).collect();
                 conn.execute(
                     "INSERT INTO vec_memories(rowid, embedding, tier, status, trust, kind, pinned)
                      VALUES (?1, ?2, 'semantic', 0, 0, 'fact', 0)",
@@ -145,18 +173,26 @@ fn bench_recall_stages(c: &mut Criterion) {
     let p99 = latencies[(latencies.len() as f64 * 0.99) as usize];
 
     println!("=== Recall Latency Stats (ms) ===");
+    println!("corpus: {} vectors", num_vectors());
     println!("p50: {:.2}", p50);
     println!("p95: {:.2}", p95);
     println!("p99: {:.2}", p99);
     println!("min: {:.2}", latencies[0]);
     println!("max: {:.2}", latencies[latencies.len() - 1]);
 
-    // Fail if p95 > 150ms
-    assert!(
-        p95 < 150.0,
-        "p95 latency {:.2}ms exceeds 150ms threshold",
-        p95
-    );
+    // Fail if p95 > 150ms — release benches only (see module docs / issue 0051).
+    if should_assert_p95() {
+        assert!(
+            p95 < P95_CEILING_MS,
+            "p95 latency {p95:.2}ms exceeds {P95_CEILING_MS:.0}ms threshold"
+        );
+        println!("p95 gate: PASS (< {P95_CEILING_MS:.0} ms)");
+    } else {
+        println!(
+            "p95 gate: SKIPPED (debug profile — run `cargo bench` for the \
+             {P95_CEILING_MS:.0} ms gate)"
+        );
+    }
 
     group.finish();
 }

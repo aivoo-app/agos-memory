@@ -21,8 +21,6 @@ fn degraded_config() -> Config {
     cfg
 }
 
-
-
 /// Insert a semantic memory by direct SQL and return its public_id.
 async fn seed(store: &StoreHandle, text: &str) -> String {
     let pid = format!("pid-{}", &agos_memory::util::sha256_hex(text)[..12]);

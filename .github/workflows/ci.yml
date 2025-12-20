@@ -26,6 +26,15 @@ jobs:
       - name: Tests (offline; mock providers only)
         run: cargo test --all-targets
 
+      - name: Release build
+        run: cargo build --release
+
+      - name: CLI smoke (offline, throwaway database)
+        run: make smoke
+
+      - name: Offline eval gate (hermetic: deterministic hash embedder)
+        run: make eval
+
       - name: Plan guard (plan/ stays untracked via plan/.gitignore)
         run: |
           if git ls-files plan/ | grep -v '^plan/.gitignore$' | grep -q .; then
@@ -35,5 +44,17 @@ jobs:
           fi
           echo "plan-guard: OK — plan/ is untracked"
 
-      - name: Release build
-        run: cargo build --release
+  # Perf gate: the p95 < 150 ms claim is a release-profile number, so it runs
+  # here (and via `make bench`) rather than inside `cargo test`.
+  bench:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Recall benchmark (release; asserts p95 < 150 ms)
+        run: make bench

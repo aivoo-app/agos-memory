@@ -54,7 +54,10 @@ async fn summarization_pass_generates_summaries() {
     let report = agos_memory::memory::run_consolidation_job(&store, &llm, &cfg)
         .await
         .unwrap();
-    assert!(report.summaries_generated < 1000, "should run without error");
+    assert!(
+        report.summaries_generated < 1000,
+        "should run without error"
+    );
 }
 
 #[tokio::test]
