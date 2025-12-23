@@ -112,8 +112,10 @@ async fn audit_is_immutable() {
     let entries_before = store.list_forget_audit(None, None, None).await.unwrap();
     let count_before = entries_before.len();
 
-    // Try to update an audit row (should fail due to no UPDATE trigger, but we test the read)
-    let _result = store
+    // The v4 immutability trigger must reject the rewrite outright (issue
+    // 0054): append-only evidence is enforced in the database, not by
+    // convention, and the rejection is asserted — never swallowed.
+    let result = store
         .write(move |conn| {
             conn.execute(
                 "UPDATE forget_audit SET reason = 'hacked' WHERE id = ?1",
@@ -122,6 +124,12 @@ async fn audit_is_immutable() {
             Ok(())
         })
         .await;
+
+    let err = result.expect_err("forget_audit UPDATE must be rejected by the immutability trigger");
+    assert!(
+        err.to_string().contains("immutable"),
+        "error should name the immutability trigger, got: {err}"
+    );
 
     let entries_after = store.list_forget_audit(None, None, None).await.unwrap();
     assert_eq!(

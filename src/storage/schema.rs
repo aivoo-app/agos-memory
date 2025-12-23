@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use crate::error::{Error, Result};
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Ordered migration list. Index i-1 upgrades to version i.
 pub const MIGRATIONS: &[&str] = &[
@@ -254,6 +254,36 @@ pub const MIGRATIONS: &[&str] = &[
         rowcount_after   INTEGER NOT NULL,
         vacuum_duration_ms INTEGER NOT NULL DEFAULT 0
     );
+    "#,
+    // v4 — immutability for the forgetting ledger (issue 0054, D33).
+    //
+    // Tombstones and the forget audit are append-only evidence: the purge
+    // path's verification claim is only trustworthy if no later UPDATE/DELETE
+    // can rewrite it. Enforced in the database, not just by convention.
+    r#"
+    CREATE TRIGGER IF NOT EXISTS tombstones_no_update
+    BEFORE UPDATE ON tombstones
+    BEGIN
+        SELECT RAISE(ABORT, 'tombstones are immutable (append-only)');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS tombstones_no_delete
+    BEFORE DELETE ON tombstones
+    BEGIN
+        SELECT RAISE(ABORT, 'tombstones are immutable (append-only)');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS forget_audit_no_update
+    BEFORE UPDATE ON forget_audit
+    BEGIN
+        SELECT RAISE(ABORT, 'forget_audit is immutable (append-only)');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS forget_audit_no_delete
+    BEFORE DELETE ON forget_audit
+    BEGIN
+        SELECT RAISE(ABORT, 'forget_audit is immutable (append-only)');
+    END;
     "#,
 ];
 

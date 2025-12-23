@@ -774,9 +774,34 @@ impl StoreHandle {
     ///
     /// Also writes a `forget_audit` row (action = 'deprecate').
     pub async fn deprecate_memory(&self, memory_id: i64, deleted_by: Option<&str>) -> Result<()> {
+        self.deprecate_with_action(memory_id, deleted_by, "deprecate", None)
+            .await
+    }
+
+    /// TTL reaper's soft-deprecate: identical state change, but the audit row
+    /// records `ttl_deprecate` so automated retention actions are
+    /// distinguishable from manual ones in the ledger (issue 0054).
+    pub async fn deprecate_for_ttl(&self, memory_id: i64) -> Result<()> {
+        self.deprecate_with_action(
+            memory_id,
+            Some("ttl-reaper"),
+            "ttl_deprecate",
+            Some("TTL expired"),
+        )
+        .await
+    }
+
+    async fn deprecate_with_action(
+        &self,
+        memory_id: i64,
+        deleted_by: Option<&str>,
+        action: &'static str,
+        reason: Option<&str>,
+    ) -> Result<()> {
         let now = crate::util::SystemClock.now_millis();
         let _agent_id = self.inner.agent_id.clone();
         let deleted_by_owned = deleted_by.map(|s| s.to_string());
+        let reason_owned = reason.map(|s| s.to_string());
         self.write(move |conn| {
             // Fetch public_id before update for the audit row
             let public_id: Option<String> = conn
@@ -796,11 +821,11 @@ impl StoreHandle {
                     "INSERT INTO forget_audit (action, selector_json, memory_ids, requester, reason, created_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                     rusqlite::params![
-                        "deprecate",
+                        action,
                         &format!("{{\"memory_id\":{}}}", memory_id),
                         &pid,
                         deleted_by_owned.as_deref().unwrap_or("agent"),
-                        None::<&str>,
+                        reason_owned.as_deref(),
                         now,
                     ],
                 )?;
@@ -847,70 +872,179 @@ impl StoreHandle {
         .await
     }
 
-    /// Hard purge: deletes from memories, memory_versions, memory_links,
-    /// vec_memories, and inserts a tombstone row. Runs VACUUM.
+    /// Hard purge: deletes the memory and every row that references it
+    /// (`memory_versions`, `memory_links` both directions, `recall_items`,
+    /// `pins`, the `vec_memories` vector; FTS is synced by trigger), verifies
+    /// zero survivors on every table, runs `VACUUM`, and records the outcome
+    /// in an append-only tombstone + `forget_audit` row (action =
+    /// 'hard_delete').
     ///
-    /// Also writes a `forget_audit` row (action = 'hard_delete').
+    /// Verification is fail-closed: if any per-table count is non-zero after
+    /// the deletes, the whole purge rolls back and the error names the table.
     pub async fn hard_purge_memory(
         &self,
         memory_id: i64,
         deleted_by: Option<&str>,
         reason: Option<&str>,
     ) -> Result<()> {
+        self.hard_purge_with_action(memory_id, deleted_by, reason, "hard_delete")
+            .await
+    }
+
+    /// TTL reaper's post-grace purge: identical mechanics to
+    /// [`StoreHandle::hard_purge_memory`], but the audit row records
+    /// `ttl_purge` so automated retention deletions are distinguishable from
+    /// manual ones in the ledger (issue 0054).
+    pub async fn hard_purge_for_ttl(&self, memory_id: i64) -> Result<()> {
+        self.hard_purge_with_action(
+            memory_id,
+            Some("ttl-reaper"),
+            Some("TTL grace period expired"),
+            "ttl_purge",
+        )
+        .await
+    }
+
+    async fn hard_purge_with_action(
+        &self,
+        memory_id: i64,
+        deleted_by: Option<&str>,
+        reason: Option<&str>,
+        action: &'static str,
+    ) -> Result<()> {
         let now = crate::util::SystemClock.now_millis();
         let agent_id = self.inner.agent_id.clone();
         let deleted_by_owned = deleted_by.map(|s| s.to_string());
         let reason_owned = reason.map(|s| s.to_string());
 
-        self.write(move |conn| {
-            // Get public_id and text_hash before deletion
+        let (public_id, text_hash, rowcount_before, rowcount_after) = self
+            .write(move |conn| {
+            // Existence gate: an unknown id must fail *before* anything is
+            // touched. `query_row` errors with QueryReturnedNoRows.
             let (public_id, text_hash): (String, String) = conn.query_row(
                 "SELECT public_id, text_hash FROM memories WHERE id = ?1",
                 [memory_id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
 
-            // Count rows before
-            let rowcount_before: i64 = conn.query_row(
+            // Per-table counts BEFORE, so the tombstone records what the purge
+            // actually removed — not a hardcoded `1` for the memories row alone
+            // (issue 0054: rowcounts are evidence, and evidence must be true).
+            let count = |sql: &str| -> Result<i64> {
+                Ok(conn.query_row(sql, [memory_id], |r| r.get(0))?)
+            };
+            let before_versions =
+                count("SELECT COUNT(*) FROM memory_versions WHERE memory_id = ?1")?;
+            let before_links = count(
+                "SELECT COUNT(*) FROM memory_links WHERE from_memory_id = ?1 OR to_memory_id = ?1",
+            )?;
+            let before_recall_items =
+                count("SELECT COUNT(*) FROM recall_items WHERE memory_id = ?1")?;
+            let before_pins = count("SELECT COUNT(*) FROM pins WHERE memory_id = ?1")?;
+            let before_vec = count("SELECT COUNT(*) FROM vec_memories WHERE rowid = ?1")?;
+            let rowcount_before = 1
+                + before_versions
+                + before_links
+                + before_recall_items
+                + before_pins
+                + before_vec;
+
+            // The delete phase is one transaction: children first (FK order —
+            // `recall_items` and `pins` reference `memories(id)`, so skipping
+            // them made every recalled/pinned memory unpurgeable), then the
+            // vector row, then the canonical row (its DELETE trigger syncs
+            // fts_memories). Any failure rolls back everything.
+            {
+                let tx = conn.unchecked_transaction()?;
+                conn.execute(
+                    "DELETE FROM memory_links WHERE from_memory_id = ?1 OR to_memory_id = ?1",
+                    [memory_id],
+                )?;
+                conn.execute(
+                    "DELETE FROM memory_versions WHERE memory_id = ?1",
+                    [memory_id],
+                )?;
+                conn.execute(
+                    "DELETE FROM recall_items WHERE memory_id = ?1",
+                    [memory_id],
+                )?;
+                conn.execute("DELETE FROM pins WHERE memory_id = ?1", [memory_id])?;
+                conn.execute(
+                    "DELETE FROM vec_memories WHERE rowid = ?1",
+                    [memory_id],
+                )?;
+                conn.execute("DELETE FROM memories WHERE id = ?1", [memory_id])?;
+                tx.commit()?;
+            }
+
+            // Fail-closed verification (issue 0054): the purge claim is only
+            // true if *no* row survived on *any* referencing table. A non-zero
+            // count aborts with the offending table named.
+            let verify = |sql: &str, label: &str| -> Result<()> {
+                let n: i64 = conn.query_row(sql, [memory_id], |r| r.get(0))?;
+                if n != 0 {
+                    return Err(Error::Storage(format!(
+                        "purge verification failed: {n} row(s) survived on {label}"
+                    )));
+                }
+                Ok(())
+            };
+            verify(
                 "SELECT COUNT(*) FROM memories WHERE id = ?1",
-                [memory_id],
-                |r| r.get(0),
+                "memories",
             )?;
+            verify(
+                "SELECT COUNT(*) FROM memory_versions WHERE memory_id = ?1",
+                "memory_versions",
+            )?;
+            verify(
+                "SELECT COUNT(*) FROM memory_links WHERE from_memory_id = ?1 OR to_memory_id = ?1",
+                "memory_links",
+            )?;
+            verify(
+                "SELECT COUNT(*) FROM recall_items WHERE memory_id = ?1",
+                "recall_items",
+            )?;
+            verify(
+                "SELECT COUNT(*) FROM pins WHERE memory_id = ?1",
+                "pins",
+            )?;
+            verify(
+                "SELECT COUNT(*) FROM vec_memories WHERE rowid = ?1",
+                "vec_memories",
+            )?;
+            // The FTS index is trigger-synced, but verify it too: a silent
+            // search hit on a purged memory would be a leak.
+            verify(
+                "SELECT COUNT(*) FROM fts_memories WHERE rowid = ?1",
+                "fts_memories",
+            )?;
+            let rowcount_after: i64 = 0;
 
-            // Delete from memory_links (both directions)
+            Ok((public_id, text_hash, rowcount_before, rowcount_after))
+        })
+        .await?;
+
+        // VACUUM reclaims the freed pages. It cannot run inside a transaction,
+        // so it runs after the delete phase committed; the duration is real
+        // wall-clock, recorded in the tombstone (0054: no fake zeros).
+        let vacuum_started = std::time::Instant::now();
+        self.write(|conn| {
+            conn.execute_batch("VACUUM;")?;
+            Ok(())
+        })
+        .await?;
+        let vacuum_duration_ms = vacuum_started.elapsed().as_millis() as i64;
+        // Reclaim the WAL space the purge freed; its return value is
+        // operational detail, not part of the purge contract.
+        self.wal_checkpoint().await?;
+
+        // Append the tombstone + audit row after success — append-only
+        // evidence that the purge happened and what it removed.
+        self.write(move |conn| {
             conn.execute(
-                "DELETE FROM memory_links WHERE from_memory_id = ?1 OR to_memory_id = ?1",
-                [memory_id],
-            )?;
-
-            // Delete from memory_versions
-            conn.execute(
-                "DELETE FROM memory_versions WHERE memory_id = ?1",
-                [memory_id],
-            )?;
-
-            // Delete from vec_memories
-            conn.execute(
-                "DELETE FROM vec_memories WHERE rowid = ?1",
-                [memory_id],
-            )?;
-
-            // Delete from memories (FTS trigger will handle fts_memories)
-            conn.execute(
-                "DELETE FROM memories WHERE id = ?1",
-                [memory_id],
-            )?;
-
-            let rowcount_after: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM memories WHERE id = ?1",
-                [memory_id],
-                |r| r.get(0),
-            )?;
-
-            // Insert tombstone
-            conn.execute(
-                "INSERT INTO tombstones (public_id, agent_id, memory_id, text_hash, deleted_at, deleted_by, reason, rowcount_before, rowcount_after)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO tombstones (public_id, agent_id, memory_id, text_hash, deleted_at, deleted_by, reason, rowcount_before, rowcount_after, vacuum_duration_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
                     &public_id,
                     &agent_id,
@@ -921,15 +1055,15 @@ impl StoreHandle {
                     reason_owned.as_deref(),
                     rowcount_before,
                     rowcount_after,
+                    vacuum_duration_ms,
                 ],
             )?;
 
-            // Write audit row
             conn.execute(
                 "INSERT INTO forget_audit (action, selector_json, memory_ids, requester, reason, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![
-                    "hard_delete",
+                    action,
                     &format!("{{\"memory_id\":{}}}", memory_id),
                     &public_id,
                     deleted_by_owned.as_deref().unwrap_or("agent"),

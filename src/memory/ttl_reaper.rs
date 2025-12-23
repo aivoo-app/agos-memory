@@ -45,9 +45,9 @@ pub async fn run_ttl_reaper(store: &StoreHandle, config: &Config) -> Result<Reap
         .await?;
 
     for (memory_id, _public_id, _tier) in &expired {
-        store
-            .deprecate_memory(*memory_id, Some("ttl-reaper"))
-            .await?;
+        // `ttl_deprecate` audit action (issue 0054): automated retention
+        // actions are distinguishable from manual `deprecate` in the ledger.
+        store.deprecate_for_ttl(*memory_id).await?;
         report.soft_deprecated += 1;
     }
 
@@ -56,13 +56,9 @@ pub async fn run_ttl_reaper(store: &StoreHandle, config: &Config) -> Result<Reap
     let past_grace = store.deprecated_past_grace(grace_millis).await?;
 
     for (memory_id, _public_id) in &past_grace {
-        store
-            .hard_purge_memory(
-                *memory_id,
-                Some("ttl-reaper"),
-                Some("TTL grace period expired"),
-            )
-            .await?;
+        // `ttl_purge` audit action (issue 0054), verified purge with real
+        // VACUUM + fail-closed row-count verification.
+        store.hard_purge_for_ttl(*memory_id).await?;
         report.hard_purged += 1;
     }
 

@@ -190,8 +190,13 @@ async fn forget_audit_logs_ttl_actions() {
     let entries = store.list_forget_audit(None, None, None).await.unwrap();
     assert!(!entries.is_empty(), "audit entries should exist");
     assert!(
-        entries.iter().any(|e| e.action == "deprecate"),
-        "should have deprecate action"
+        entries.iter().any(|e| e.action == "ttl_deprecate"),
+        "reaper deprecation must be recorded as `ttl_deprecate` (issue 0054), \
+         not the manual `deprecate`"
+    );
+    assert!(
+        !entries.iter().any(|e| e.action == "deprecate"),
+        "manual `deprecate` must not be used by the reaper"
     );
 }
 

@@ -132,6 +132,9 @@ async fn tombstone_is_immutable() {
         .await
         .unwrap();
 
+    // The v4 immutability trigger must reject the rewrite outright (issue
+    // 0054): a tombstone that could be edited would not be evidence. The
+    // rejection is asserted, never swallowed.
     let result = store
         .write(move |conn| {
             conn.execute(
@@ -141,7 +144,24 @@ async fn tombstone_is_immutable() {
             Ok(())
         })
         .await;
-    let _ = result;
+
+    let err = result.expect_err("tombstones UPDATE must be rejected by the immutability trigger");
+    assert!(
+        err.to_string().contains("immutable"),
+        "error should name the immutability trigger, got: {err}"
+    );
+
+    // DELETE is equally forbidden — append-only means append-only.
+    let result = store
+        .write(move |conn| {
+            conn.execute("DELETE FROM tombstones WHERE memory_id = ?1", [row.id])?;
+            Ok(())
+        })
+        .await;
+    assert!(
+        result.is_err(),
+        "tombstones DELETE must be rejected by the immutability trigger"
+    );
 }
 
 #[tokio::test]
