@@ -32,10 +32,10 @@ fn blob(vec: &[f32]) -> Vec<u8> {
 /// Trust: `source_kind` web/tool/import forces `trust='untrusted'`.
 /// Low confidence (< `pending_threshold`) forces `status='pending'`.
 /// Text is redacted BEFORE embedding so secrets never reach the provider.
-pub async fn persist_candidate<E: Embedder>(
+pub async fn persist_candidate(
     store: &StoreHandle,
     cand: &Candidate,
-    embedder: &E,
+    embedder: &dyn Embedder,
     extractor_version: &str,
 ) -> Result<PersistReport> {
     persist_candidate_full(

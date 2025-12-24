@@ -5,4 +5,4 @@ pub mod init;
 pub mod remember;
 pub mod root;
 
-pub use root::{Cli, run};
+pub use root::{Cli, run, scheduler_tick};

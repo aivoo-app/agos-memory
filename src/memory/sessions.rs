@@ -150,12 +150,16 @@ pub async fn close_session(store: &StoreHandle, session_id: i64, reason: &str) -
 }
 
 /// Close sessions idle longer than `idle_minutes`. Returns count closed.
-pub async fn close_idle_sessions(store: &StoreHandle, idle_minutes: u64) -> Result<usize> {
+/// Close sessions idle longer than `idle_minutes`; returns the ids closed.
+///
+/// Returning the ids (not just a count) lets the caller enqueue per-session
+/// work — e.g. extraction — for every session that just closed (0055).
+pub async fn close_idle_sessions(store: &StoreHandle, idle_minutes: u64) -> Result<Vec<i64>> {
     let cutoff = SystemClock.now_millis() - (idle_minutes as i64) * 60_000;
     let now = SystemClock.now_millis();
     store
         .write(move |conn| {
-            let n = conn.execute(
+            conn.execute(
                 "UPDATE sessions SET status = 'closed', ended_at = ?1, end_reason = 'idle'
                  WHERE status = 'open'
                    AND COALESCE(
@@ -164,7 +168,15 @@ pub async fn close_idle_sessions(store: &StoreHandle, idle_minutes: u64) -> Resu
                        ) < ?2",
                 rusqlite::params![now, cutoff],
             )?;
-            Ok(n)
+            let mut stmt = conn.prepare(
+                "SELECT id FROM sessions WHERE status = 'closed' AND end_reason = 'idle'
+                  AND ended_at = ?1",
+            )?;
+            let rows: Vec<i64> = stmt
+                .query_map(rusqlite::params![now], |r| r.get::<_, i64>(0))?
+                .collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
+                .map_err(|e| crate::error::Error::Storage(e.to_string()))?;
+            Ok(rows)
         })
         .await
 }
@@ -278,8 +290,8 @@ mod tests {
             })
             .await
             .unwrap();
-        let n = close_idle_sessions(&store, 30).await.unwrap();
-        assert_eq!(n, 1);
+        let closed = close_idle_sessions(&store, 30).await.unwrap();
+        assert_eq!(closed.len(), 1);
         let still_open = get_open_session(&store, "a").await.unwrap().unwrap();
         assert_eq!(still_open.id, fresh.id);
     }

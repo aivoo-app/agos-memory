@@ -12,10 +12,8 @@ use crate::error::Result;
 use crate::llm::ChatClient;
 use crate::storage::StoreHandle;
 
-use super::consolidate::run_consolidation_job;
+use super::extract::extract_session;
 use super::jobs::JobRow;
-use super::summarize::run_summarization_job;
-use super::ttl_reaper::run_ttl_reaper;
 
 /// Handler for one job kind: processes the payload, errors on failure.
 pub type Handler = Arc<
@@ -48,32 +46,35 @@ impl Worker {
             handlers: HashMap::new(),
             shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
-        // Register built-in handlers
+        // Register built-in handlers.
+        //
+        // `maintain` carries a JSON payload `{"action":"ttl"|"consolidate"|"all"}`
+        // (D35): consolidation is folded into the `maintain` kind rather than
+        // adding a `consolidate` kind, which would need a schema-v5 `jobs` table
+        // rebuild (the CHECK can't be altered in place). Unknown actions fail
+        // fast (→ retry → DLQ) instead of silently doing nothing.
         worker.on("summarize", |_job, store, llm, config| {
             let store = store.clone();
             let llm = llm.clone();
             let config = config.clone();
             Box::pin(async move {
-                run_summarization_job(&store, &llm, &config).await?;
+                super::summarize::run_summarization_job(&store, &llm, &config).await?;
                 Ok(())
             })
         });
-        worker.on("consolidate", |_job, store, llm, config| {
+        worker.on("extract", |job, store, llm, config| {
             let store = store.clone();
             let llm = llm.clone();
             let config = config.clone();
-            Box::pin(async move {
-                run_consolidation_job(&store, &llm, &config).await?;
-                Ok(())
-            })
+            let payload = job.payload_json.clone();
+            Box::pin(async move { run_extract_job(&store, &llm, &config, &payload).await })
         });
-        worker.on("maintain", |_job, store, _llm, config| {
+        worker.on("maintain", |job, store, llm, config| {
             let store = store.clone();
+            let llm = llm.clone();
             let config = config.clone();
-            Box::pin(async move {
-                run_ttl_reaper(&store, &config).await?;
-                Ok(())
-            })
+            let payload = job.payload_json.clone();
+            Box::pin(async move { run_maintain_job(&store, &llm, &config, &payload).await })
         });
         worker
     }
@@ -131,4 +132,91 @@ impl Worker {
             }
         }
     }
+}
+
+/// Run an `extract` job: payload is `{"session": <id>}`. A missing/empty
+/// payload is a loud error — the job must not silently no-op (it would retry
+/// forever). The worker's chat client is the configured one (built by the
+/// caller via `chat_from_config`); the ledger is left to the embedder path.
+async fn run_extract_job(
+    store: &StoreHandle,
+    llm: &std::sync::Arc<dyn ChatClient>,
+    config: &Config,
+    payload: &str,
+) -> Result<()> {
+    use crate::embed::embedder_from_config;
+
+    let dim = store.embed_dim().await?;
+    let embedder = embedder_from_config(&config.embed, dim);
+    store.validate_embed_dim(&*embedder).await?;
+
+    let v: serde_json::Value = if payload.trim().is_empty() {
+        return Err(crate::error::Error::InvalidInput(
+            "extract payload must be {\"session\": <id>}".into(),
+        ));
+    } else {
+        serde_json::from_str(payload).map_err(|e| {
+            crate::error::Error::InvalidInput(format!("extract payload is not JSON: {e}"))
+        })?
+    };
+    let Some(sid) = v.get("session").and_then(|x| x.as_i64()) else {
+        return Err(crate::error::Error::InvalidInput(
+            "extract payload must be {\"session\": <id>}".into(),
+        ));
+    };
+
+    extract_session(store, sid, llm.as_ref(), &*embedder, None).await?;
+    Ok(())
+}
+
+/// Run a `maintain` job: payload `{"action":"ttl"|"consolidate"|"all"|"summarize"}`.
+///
+/// D35: consolidation is folded into `maintain` (no schema change — the `jobs`
+/// CHECK can't be altered in place). The LLM is the configured one; offline
+/// callers pass `MockChat` (empty `base_url`). Unknown actions fail fast
+/// (→ retry → DLQ) instead of silently no-oping.
+async fn run_maintain_job(
+    store: &StoreHandle,
+    llm: &std::sync::Arc<dyn ChatClient>,
+    config: &Config,
+    payload: &str,
+) -> Result<()> {
+    let action: String = if payload.trim().is_empty() {
+        "all".to_string()
+    } else {
+        let v: serde_json::Value = serde_json::from_str(payload).map_err(|e| {
+            crate::error::Error::InvalidInput(format!("maintain payload is not JSON: {e}"))
+        })?;
+        v.get("action")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| {
+                crate::error::Error::InvalidInput(
+                    "maintain payload must be {\"action\": \"ttl\"|\"consolidate\"|\"all\"}".into(),
+                )
+            })?
+            .to_string()
+    };
+
+    match action.as_str() {
+        "ttl" => {
+            super::ttl_reaper::run_ttl_reaper(store, config).await?;
+        }
+        "consolidate" => {
+            super::consolidate::run_consolidation_job(store, llm, config).await?;
+        }
+        "summarize" => {
+            super::summarize::run_summarization_job(store, llm, config).await?;
+        }
+        "all" => {
+            super::ttl_reaper::run_ttl_reaper(store, config).await?;
+            super::consolidate::run_consolidation_job(store, llm, config).await?;
+            super::summarize::run_summarization_job(store, llm, config).await?;
+        }
+        other => {
+            return Err(crate::error::Error::InvalidInput(format!(
+                "unknown maintain action '{other}'; expected ttl/consolidate/all/summarize"
+            )));
+        }
+    }
+    Ok(())
 }

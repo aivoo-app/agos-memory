@@ -18,7 +18,7 @@ pub mod worker;
 
 pub use consolidate::run_consolidation_job;
 pub use extract::Candidate;
-pub use jobs::{JobRow, dead_count, enqueue};
+pub use jobs::{complete, dead_count, enqueue, requeue_dead};
 pub use persist::{
     DEDUP_THRESHOLD, PersistReport, persist_candidate, persist_candidate_full,
     persist_candidate_unembedded,

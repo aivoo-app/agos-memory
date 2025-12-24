@@ -150,6 +150,10 @@ pub enum Command {
         /// Run consolidation now.
         #[arg(long)]
         consolidate: bool,
+        /// Run the reaper/consolidation scheduler in the foreground, honoring
+        /// `[memory] reaper_hour` and `[consolidate]` from config.
+        #[arg(long)]
+        schedule: bool,
     },
 }
 
@@ -284,7 +288,11 @@ pub async fn run(cli: Cli) -> Result<()> {
             all,
             force,
         } => summarize_cmd(&cfg, id, tier, all, force).await,
-        Command::Maintain { ttl, consolidate } => maintain_cmd(&cfg, ttl, consolidate).await,
+        Command::Maintain {
+            ttl,
+            consolidate,
+            schedule,
+        } => maintain_cmd(&cfg, ttl, consolidate, schedule).await,
     }
 }
 
@@ -708,10 +716,25 @@ async fn summarize_cmd(
     Ok(())
 }
 
-/// `maintain` CLI command — run maintenance jobs.
-async fn maintain_cmd(cfg: &Config, ttl: bool, consolidate: bool) -> Result<()> {
+/// `maintain` CLI command — run maintenance jobs, or the scheduler.
+///
+/// 0055: the LLM is built from config (`chat_from_config`), so a configured
+/// provider is used; offline (empty `base_url`) falls back to `MockChat`.
+/// `--schedule` runs the foreground scheduler that honors `[memory]
+/// reaper_hour` and `[consolidate]`, enqueuing `maintain` jobs for the worker.
+async fn maintain_cmd(cfg: &Config, ttl: bool, consolidate: bool, schedule: bool) -> Result<()> {
     let store = crate::storage::StoreHandle::open(cfg, defaults::READ_POOL_SIZE).await?;
-    use crate::llm::MockChat;
+    let llm = crate::llm::chat_from_config(&cfg.llm, None);
+
+    if schedule {
+        return run_scheduler(&store, cfg).await;
+    }
+
+    if !ttl && !consolidate {
+        return Err(crate::error::Error::InvalidInput(
+            "specify --ttl and/or --consolidate (or --schedule)".into(),
+        ));
+    }
 
     if ttl {
         let report = crate::memory::run_ttl_reaper(&store, cfg).await?;
@@ -722,8 +745,6 @@ async fn maintain_cmd(cfg: &Config, ttl: bool, consolidate: bool) -> Result<()> 
     }
 
     if consolidate {
-        let llm: std::sync::Arc<dyn crate::llm::ChatClient> =
-            std::sync::Arc::new(MockChat::default());
         let report = crate::memory::run_consolidation_job(&store, &llm, cfg).await?;
         println!(
             "Consolidation: {} summaries, {} dedup merges, {} orphans deleted",
@@ -731,10 +752,150 @@ async fn maintain_cmd(cfg: &Config, ttl: bool, consolidate: bool) -> Result<()> 
         );
     }
 
-    if !ttl && !consolidate {
-        return Err(crate::error::Error::InvalidInput(
-            "specify --ttl and/or --consolidate".into(),
-        ));
-    }
     Ok(())
+}
+
+/// What the scheduler should enqueue at one tick, derived from the clock
+/// and config. Pure (no I/O) so it is unit-testable without a database.
+///
+/// `now` is minutes since the Unix epoch; the caller converts wall-clock to
+/// that form. Returns the action strings to enqueue, in declared order.
+/// Day-of-week of the Unix epoch (1970-01-01) in the 0=Sunday convention:
+/// Thursday = 4. `now_minutes` is minutes since that epoch, so the weekday
+/// is `(4 + now_minutes / 1440) % 7`.
+const EPOCH_WEEKDAY: u32 = 4;
+
+pub fn scheduler_tick(now_minutes: u64, cfg: &Config) -> Vec<&'static str> {
+    let hour = (now_minutes / 60) as u32 % 24;
+    let minute = (now_minutes % 60) as u32;
+    let mut out = Vec::new();
+
+    if cfg.memory.reaper_hour() != u32::MAX && hour == cfg.memory.reaper_hour() && minute == 0 {
+        out.push("ttl");
+    }
+    if cfg.consolidate.enabled {
+        let day = (EPOCH_WEEKDAY + (now_minutes / (24 * 60)) as u32) % 7;
+        if day == cfg.consolidate.day && hour == cfg.consolidate.hour && minute == 0 {
+            out.push("consolidate");
+        }
+    }
+    out
+}
+
+/// Foreground scheduler: enqueues `maintain` jobs at the configured hours.
+///
+/// Honors `[memory] reaper_hour` (TTL reaper) and `[consolidate]`
+/// (`enabled`/`day`/`hour` for the consolidation pass) so the config knobs are
+/// no longer dead (0055). Runs until the process is signalled.
+async fn run_scheduler(store: &crate::storage::StoreHandle, cfg: &Config) -> Result<()> {
+    use crate::memory::jobs;
+    use crate::util::clock::Clock;
+
+    eprintln!(
+        "scheduler: reaper_hour={}, consolidate.enabled={}, consolidate.hour={}",
+        cfg.memory.reaper_hour(),
+        cfg.consolidate.enabled,
+        cfg.consolidate.hour
+    );
+
+    let tick = std::time::Duration::from_secs(60);
+    let clock = crate::util::SystemClock;
+    loop {
+        let now = clock.now_millis();
+        let now_minutes = (now / 60_000) as u64;
+
+        // `enqueue` is idempotent on the idempotency key (`scheduler:ttl`,
+        // `scheduler:consolidate`), so re-ticking the same minute is a no-op.
+        for action in scheduler_tick(now_minutes, cfg) {
+            let payload = serde_json::json!({"action": action}).to_string();
+            let id_key = format!("scheduler:{action}");
+            if let Err(e) = jobs::enqueue(store, "maintain", &payload, Some(&id_key)).await {
+                eprintln!("scheduler: enqueue {action} failed: {e}");
+            }
+        }
+
+        tokio::time::sleep(tick).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `now_minutes` is minutes since the Unix epoch; the caller converts
+    /// wall-clock to that form. The epoch is a Thursday, so day 0 = Thursday
+    /// (day 4 of the 0=Sunday week).
+    const EPOCH_MINUTES: u64 = 0; // 1970-01-01 00:00 UTC = Thursday 00:00
+
+    fn cfg(reaper_hour: u32, cons_enabled: bool, cons_day: u32, cons_hour: u32) -> Config {
+        Config {
+            memory: crate::config::MemoryConfig {
+                reaper_hour,
+                ..Default::default()
+            },
+            consolidate: crate::config::ConsolidateConfig {
+                enabled: cons_enabled,
+                day: cons_day,
+                hour: cons_hour,
+            },
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn scheduler_tick_silent_off_hour() {
+        // 02:30 — neither the reaper (03:00) nor consolidation (Sun 04:00).
+        let c = cfg(3, true, 0, 4);
+        let tick = EPOCH_MINUTES + 2 * 60 + 30;
+        assert!(
+            scheduler_tick(tick, &c).is_empty(),
+            "off-hour must enqueue nothing"
+        );
+    }
+
+    #[test]
+    fn scheduler_tick_fires_reaper_at_the_hour() {
+        let c = cfg(3, true, 0, 4);
+        let tick = EPOCH_MINUTES + 3 * 60; // 03:00
+        assert_eq!(scheduler_tick(tick, &c), vec!["ttl"]);
+    }
+
+    #[test]
+    fn scheduler_tick_fires_consolidation_at_its_hour() {
+        // Epoch is Thursday; day 0 (Sunday) is 3 days later.
+        let c = cfg(3, true, 0, 4);
+        let tick = EPOCH_MINUTES + (3 * 24 + 4) * 60; // Sunday 04:00
+        assert_eq!(scheduler_tick(tick, &c), vec!["consolidate"]);
+    }
+
+    #[test]
+    fn scheduler_tick_fires_both_when_hours_coincide() {
+        let c = cfg(4, true, 0, 4);
+        let tick = EPOCH_MINUTES + (3 * 24 + 4) * 60; // Sunday 04:00
+        assert_eq!(scheduler_tick(tick, &c), vec!["ttl", "consolidate"]);
+    }
+
+    #[test]
+    fn scheduler_tick_skips_consolidation_when_disabled() {
+        let c = cfg(4, false, 0, 4);
+        let tick = EPOCH_MINUTES + (3 * 24 + 4) * 60;
+        assert_eq!(scheduler_tick(tick, &c), vec!["ttl"]);
+    }
+
+    #[test]
+    fn scheduler_tick_skips_reaper_when_hour_is_max() {
+        // `u32::MAX` = disabled (the default when the knob is absent).
+        let mut c = Config::default();
+        c.memory.reaper_hour = u32::MAX;
+        let tick = EPOCH_MINUTES + 4 * 60;
+        assert!(scheduler_tick(tick, &c).is_empty());
+    }
+
+    #[test]
+    fn scheduler_tick_requires_minute_zero() {
+        // Same hour, minute 30 — must not fire.
+        let c = cfg(3, false, 0, 0);
+        let tick = EPOCH_MINUTES + 3 * 60 + 30;
+        assert!(scheduler_tick(tick, &c).is_empty());
+    }
 }
