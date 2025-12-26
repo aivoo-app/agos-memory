@@ -5,9 +5,9 @@ use agos_memory::config::{Config, EmbedProvider};
 use agos_memory::error::Result;
 use agos_memory::llm::ChatClient;
 use agos_memory::memory::jobs::{dead_count, enqueue};
-use rusqlite::params;
 use agos_memory::memory::worker::Worker;
 use agos_memory::storage::StoreHandle;
+use rusqlite::params;
 use std::sync::Arc;
 
 struct EmptyChat;
