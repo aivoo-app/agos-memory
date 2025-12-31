@@ -160,6 +160,52 @@ fn remember_keeps_the_fact_when_the_embedding_provider_is_unreachable() {
 }
 
 #[test]
+fn forget_rollback_errors_on_unknown_memory() {
+    // 0056: `forget rollback` must be a wired subcommand that fails loudly
+    // (proper exit code + message) when the target memory does not exist. The
+    // happy path (revert text, intact version chain) is covered by the data
+    // layer in tests/versioning.rs, which exercises the same rollback_memory
+    // the CLI dispatches to.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("agos-memory.toml"),
+        "db_path = 'smoke.db'\nagent_id = 'default'\n\n[embed]\nprovider = 'none'\n",
+    )
+    .unwrap();
+    run(dir.path(), &["init", "--force"]);
+
+    let (code, stdout, stderr) = run(
+        dir.path(),
+        &["forget", "rollback", "nope", "--to-version", "1"],
+    );
+    assert_ne!(
+        code, 0,
+        "rollback of a missing memory must fail: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("not found") || stderr.contains("not found"),
+        "error must name the missing memory: {stdout}{stderr}"
+    );
+}
+
+#[test]
+fn forget_rollback_rejects_invalid_version() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("agos-memory.toml"),
+        "db_path = 'smoke.db'\nagent_id = 'default'\n\n[embed]\nprovider = 'none'\n",
+    )
+    .unwrap();
+    run(dir.path(), &["init", "--force"]);
+
+    let (code, _stdout, stderr) = run(
+        dir.path(),
+        &["forget", "rollback", "nope", "--to-version", "0"],
+    );
+    assert_ne!(code, 0, "to-version 0 must be rejected: {stderr}");
+}
+
+#[test]
 fn status_reports_a_missing_database_and_exit_codes_stay_stable() {
     let dir = tempfile::tempdir().unwrap();
     let (code, stdout, _) = run(dir.path(), &["status"]);

@@ -195,6 +195,14 @@ pub enum ForgetCmd {
     },
     /// List tombstones (hard-purged memories).
     ListTombstones,
+    /// Rollback a memory to a prior version (writes a new head; chain intact).
+    Rollback {
+        /// Public id of the memory to roll back.
+        id: String,
+        /// Target version number to restore (`--to-version`).
+        #[arg(long)]
+        to_version: i64,
+    },
 }
 
 /// Session subcommands.
@@ -647,6 +655,23 @@ async fn forget_cmd(cfg: &Config, cmd: ForgetCmd) -> Result<()> {
                         .unwrap_or_default()
                 );
             }
+        }
+        ForgetCmd::Rollback { id, to_version } => {
+            let row = store.get_memory(id.clone()).await?.ok_or_else(|| {
+                crate::error::Error::InvalidInput(format!("memory {id} not found"))
+            })?;
+            if to_version < 1 {
+                return Err(crate::error::Error::InvalidInput(
+                    "to-version must be >= 1".into(),
+                ));
+            }
+            let rolled = store
+                .rollback_memory(row.id, to_version, Some("agent"))
+                .await?;
+            println!(
+                "rolled back: {} to v{} ({})",
+                rolled.public_id, to_version, rolled.status
+            );
         }
         ForgetCmd::ListTombstones => {
             let tombstones = store.list_tombstones().await?;
