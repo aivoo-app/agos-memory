@@ -9,6 +9,7 @@
 //!    `memories` row, deletes them.
 
 use crate::config::Config;
+use crate::embed::hash_to_unit_vector;
 use crate::error::Result;
 use crate::llm::ChatClient;
 use crate::storage::StoreHandle;
@@ -57,32 +58,38 @@ pub async fn run_consolidation_job(
 
 /// Re-run cosine dedup across all active memories.
 ///
-/// For each pair of memories in the same tier, if their text_hash-based
-/// similarity (using SHA-256 as a cheap proxy) or actual cosine similarity
-/// exceeds the dedup threshold, merge them: bump ref_count on the older
-/// row, set dedup_cluster_id on both.
+/// For each pair of memories in the same tier, computes the cosine similarity
+/// of their deterministic unit-embedding vectors (`hash_to_unit_vector`, the
+/// same proxy used by the write-path dedup in `persist.rs`). When similarity
+/// meets or exceeds `memory.dedup_threshold`, merges the cluster: bumps
+/// `ref_count` on the cluster owner and tags the newcomer with the cluster id.
 ///
 /// Returns the number of clusters merged.
 async fn dedup_consolidation(store: &StoreHandle, config: &Config) -> Result<u64> {
     let threshold = config.memory.dedup_threshold;
+    let dim = store.embed_dim().await?;
     let memories = store.all_active_memories_for_dedup().await?;
-    let mut clusters: Vec<(i64, String, String, String)> = Vec::new(); // (id, public_id, tier, cluster_id)
+
+    // Pre-compute a unit vector for every active memory (deterministic, no
+    // network call — same proxy as write-path dedup).
+    let mut mem_data: Vec<(i64, String, String, Vec<f32>)> = Vec::with_capacity(memories.len());
+    for (id, public_id, tier, text, _text_hash) in &memories {
+        let vec = hash_to_unit_vector(text, dim);
+        mem_data.push((*id, public_id.clone(), tier.clone(), vec));
+    }
+
+    // Cluster bookkeeping: (cluster_id, owner_id, owner_vec, tier).
+    let mut clusters: Vec<(String, i64, Vec<f32>, String)> = Vec::new();
     let mut merged: u64 = 0;
 
-    for mem in &memories {
-        let (id, public_id, tier, text, _text_hash) = mem;
-        let hash = sha256_hex(text);
-
-        // Find an existing cluster in the same tier with similar hash
+    for (id, public_id, tier, vec) in &mem_data {
         let mut found = false;
-        for cluster in &clusters {
-            if cluster.2 == *tier {
-                // Simple text-based similarity check
-                let similarity = text_similarity(&hash, &sha256_hex(&cluster.3));
-                if similarity >= threshold {
-                    // Merge: bump ref_count on the cluster owner
-                    store.bump_ref_count(cluster.0).await?;
-                    store.set_dedup_cluster(*id, &cluster.3).await?;
+        for (cluster_id, owner_id, owner_vec, cluster_tier) in &clusters {
+            if *cluster_tier == *tier {
+                let sim = cosine_similarity(vec, owner_vec);
+                if sim >= threshold {
+                    store.bump_ref_count(*owner_id).await?;
+                    store.set_dedup_cluster(*id, cluster_id).await?;
                     merged += 1;
                     found = true;
                     break;
@@ -90,37 +97,21 @@ async fn dedup_consolidation(store: &StoreHandle, config: &Config) -> Result<u64
             }
         }
         if !found {
-            let cluster_id = format!("dedup-{}", sha256_hex(&hash));
+            let cluster_id = format!("dedup-{}", sha256_hex(public_id));
             store.set_dedup_cluster(*id, &cluster_id).await?;
-            clusters.push((*id, public_id.clone(), tier.clone(), cluster_id));
+            clusters.push((cluster_id, *id, vec.clone(), tier.clone()));
         }
     }
 
     Ok(merged)
 }
 
-/// Simple text similarity based on shared character n-grams.
-/// This is a cheap proxy for cosine similarity; the real dedup happens
-/// on the write path with actual embeddings.
-fn text_similarity(a: &str, b: &str) -> f64 {
-    if a == b {
-        return 1.0;
-    }
-    let a_chars: Vec<char> = a.chars().collect();
-    let b_chars: Vec<char> = b.chars().collect();
-    let n = 3; // trigram
-    let a_grams: std::collections::HashSet<String> = a_chars
-        .windows(n)
-        .map(|w| w.iter().collect::<String>())
-        .collect();
-    let b_grams: std::collections::HashSet<String> = b_chars
-        .windows(n)
-        .map(|w| w.iter().collect::<String>())
-        .collect();
-    if a_grams.is_empty() || b_grams.is_empty() {
-        return 0.0;
-    }
-    let intersection = a_grams.intersection(&b_grams).count();
-    let union = a_grams.union(&b_grams).count();
-    intersection as f64 / union as f64
+/// Cosine similarity of two unit vectors (dot product, clamped to [-1, 1]).
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    debug_assert_eq!(a.len(), b.len());
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (*x as f64) * (*y as f64))
+        .sum::<f64>()
+        .clamp(-1.0, 1.0)
 }

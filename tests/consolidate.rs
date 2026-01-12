@@ -127,9 +127,10 @@ async fn dedup_consolidation_merges_similar() {
         .await
         .unwrap();
 
-    // Create two very similar memories
+    // Two identical memories must merge under cosine dedup: identical text
+    // produces identical unit vectors (cosine similarity 1.0 >= 0.92).
     let _row1 = make_memory(&store, "Rust is a systems programming language", "semantic").await;
-    let _row2 = make_memory(&store, "Rust is a systems language", "semantic").await;
+    let _row2 = make_memory(&store, "Rust is a systems programming language", "semantic").await;
 
     let llm: Arc<dyn agos_memory::llm::ChatClient> = Arc::new(MockChat::default());
     let cfg = Config::default();
@@ -137,7 +138,35 @@ async fn dedup_consolidation_merges_similar() {
         .await
         .unwrap();
     assert!(
-        report.dedup_clusters_merged < 1000,
-        "should run without error"
+        report.dedup_clusters_merged >= 1,
+        "identical memories must merge (got {})",
+        report.dedup_clusters_merged
+    );
+}
+
+#[tokio::test]
+async fn dedup_consolidation_does_not_merge_unrelated() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StoreHandle::open(&test_config(&dir.path().join("dedup.db")), 1)
+        .await
+        .unwrap();
+
+    // Two lexically unrelated memories must not merge.
+    let _row1 = make_memory(&store, "Rust is a systems programming language", "semantic").await;
+    let _row2 = make_memory(
+        &store,
+        "The quick brown fox jumps over the lazy dog",
+        "semantic",
+    )
+    .await;
+
+    let llm: Arc<dyn agos_memory::llm::ChatClient> = Arc::new(MockChat::default());
+    let cfg = Config::default();
+    let report = agos_memory::memory::run_consolidation_job(&store, &llm, &cfg)
+        .await
+        .unwrap();
+    assert_eq!(
+        report.dedup_clusters_merged, 0,
+        "unrelated memories must not merge"
     );
 }
