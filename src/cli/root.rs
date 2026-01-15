@@ -688,6 +688,10 @@ async fn forget_cmd(cfg: &Config, cmd: ForgetCmd) -> Result<()> {
 }
 
 /// `summarize` CLI command — on-demand summarization.
+///
+/// 0056: the LLM is built from config (`chat_from_config`), so a configured
+/// provider is used; offline (empty `base_url`) falls back to `MockChat`,
+/// mirroring `maintain_cmd`.
 async fn summarize_cmd(
     cfg: &Config,
     id: Option<String>,
@@ -695,12 +699,11 @@ async fn summarize_cmd(
     all: bool,
     force: bool,
 ) -> Result<()> {
-    use crate::llm::MockChat;
     use crate::memory::summarize_by_id;
     use crate::memory::summarize_tier;
 
     let store = crate::storage::StoreHandle::open(cfg, defaults::READ_POOL_SIZE).await?;
-    let llm: std::sync::Arc<dyn crate::llm::ChatClient> = std::sync::Arc::new(MockChat::default());
+    let llm = crate::llm::chat_from_config(&cfg.llm, None);
 
     if let Some(pid) = id {
         let row = store

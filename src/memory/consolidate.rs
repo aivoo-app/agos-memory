@@ -115,3 +115,28 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
         .sum::<f64>()
         .clamp(-1.0, 1.0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cosine_similarity_identical() {
+        let v = vec![1.0_f32, 0.0, 0.0];
+        assert!((cosine_similarity(&v, &v) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_similarity_opposite() {
+        let a = vec![1.0_f32, 0.0, 0.0];
+        let b = vec![-1.0_f32, 0.0, 0.0];
+        assert!((cosine_similarity(&a, &b) - (-1.0_f64)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_similarity_orthogonal() {
+        let a = vec![1.0_f32, 0.0, 0.0];
+        let b = vec![0.0_f32, 1.0, 0.0];
+        assert!((cosine_similarity(&a, &b)).abs() < 1e-6);
+    }
+}

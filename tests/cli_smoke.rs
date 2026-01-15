@@ -94,7 +94,7 @@ fn remember_writes_a_memory_offline_and_it_survives_the_process() {
     // Offline config: degraded keyword-only mode, no provider needed (D4).
     std::fs::write(
         dir.path().join("agos-memory.toml"),
-        "db_path = 'smoke.db'\nagent_id = 'default'\n\n[embed]\nprovider = 'none'\n",
+        "db_path = 'smoke.db'\nagent_id = 'default'\n\n[embed]\nprovider = 'none'\n\n[llm]\nbase_url = ''\n",
     )
     .unwrap();
 
@@ -169,7 +169,7 @@ fn forget_rollback_errors_on_unknown_memory() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("agos-memory.toml"),
-        "db_path = 'smoke.db'\nagent_id = 'default'\n\n[embed]\nprovider = 'none'\n",
+        "db_path = 'smoke.db'\nagent_id = 'default'\n\n[embed]\nprovider = 'none'\n\n[llm]\nbase_url = ''\n",
     )
     .unwrap();
     run(dir.path(), &["init", "--force"]);
@@ -193,7 +193,7 @@ fn forget_rollback_rejects_invalid_version() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("agos-memory.toml"),
-        "db_path = 'smoke.db'\nagent_id = 'default'\n\n[embed]\nprovider = 'none'\n",
+        "db_path = 'smoke.db'\nagent_id = 'default'\n\n[embed]\nprovider = 'none'\n\n[llm]\nbase_url = ''\n",
     )
     .unwrap();
     run(dir.path(), &["init", "--force"]);
@@ -203,6 +203,46 @@ fn forget_rollback_rejects_invalid_version() {
         &["forget", "rollback", "nope", "--to-version", "0"],
     );
     assert_ne!(code, 0, "to-version 0 must be rejected: {stderr}");
+}
+
+#[test]
+fn summarize_offline_runs_on_an_initted_database() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("agos-memory.toml"),
+        "db_path = 'smoke.db'\nagent_id = 'default'\n\n[embed]\nprovider = 'none'\n\n[llm]\nbase_url = ''\n",
+    )
+    .unwrap();
+    run(dir.path(), &["init", "--force"]);
+
+    // Create a memory to summarize, then extract its public_id from output
+    let (code, stdout, _) = run(
+        dir.path(),
+        &[
+            "remember",
+            "--text",
+            "Rust is a systems programming language designed for safety",
+        ],
+    );
+    assert_eq!(code, 0, "remember must succeed: {stdout}");
+
+    // Extract public_id from "memory:  <uuid> (active)" line
+    let pid = stdout
+        .lines()
+        .find(|l| l.starts_with("memory:"))
+        .and_then(|l| {
+            // Format: "memory:  <uuid> (active)"
+            l.split_whitespace().nth(1).map(|w| w.to_string())
+        })
+        .expect("remember output must contain public_id");
+
+    // summarize --id should run (exit 0) on offline DB with MockChat
+    // Since we use provider='none', it falls back to MockChat
+    let (code, _stdout, stderr) = run(dir.path(), &["summarize", "--id", &pid]);
+    assert_eq!(
+        code, 0,
+        "summarize --id must succeed offline (MockChat fallback): {stderr}"
+    );
 }
 
 #[test]
