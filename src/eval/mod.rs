@@ -20,8 +20,10 @@ use serde::Deserialize;
 
 use crate::error::{Error, Result};
 
+pub mod rouge;
 pub mod runner;
 
+pub use rouge::{lcs_len, rouge_l, tokenize};
 pub use runner::{CaseOutcome, EvalRun, run, run_cases};
 
 /// One candidate memory available to a case.
