@@ -39,6 +39,10 @@ pub struct SummarizeReport {
     pub summary_text: String,
     /// Token count of the summary (measured by the same heuristic used for budgeting).
     pub summary_tokens: i64,
+    /// ROUGE-L F1 (issue 0049) of the summary against the memory's source
+    /// text — compression fidelity: how much of the original's token
+    /// structure the summary preserved. 1.0 = verbatim copy, 0.0 = disjoint.
+    pub quality_score: f64,
     /// Whether an existing summary was overwritten.
     pub overwrote: bool,
 }
@@ -88,10 +92,13 @@ pub async fn summarize_by_id(
             crate::error::Error::InvalidInput("memory not found after update".to_string())
         })?;
 
+    let quality_score = crate::eval::rouge_l(&memory.text, &summary_text);
+
     Ok(SummarizeReport {
         memory: updated_memory,
         summary_text,
         summary_tokens,
+        quality_score,
         overwrote,
     })
 }
@@ -176,6 +183,7 @@ pub async fn summarize_tier(
 
         reports.push(SummarizeReport {
             memory: updated_memory,
+            quality_score: crate::eval::rouge_l(&memory.text, &summary_text),
             summary_text,
             summary_tokens,
             overwrote: false,

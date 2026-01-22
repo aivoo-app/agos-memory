@@ -712,15 +712,18 @@ async fn summarize_cmd(
             .ok_or_else(|| crate::error::Error::InvalidInput(format!("memory {pid} not found")))?;
         let report = summarize_by_id(&store, &llm, cfg, row.id, force).await?;
         println!(
-            "summarized: {} ({} tokens)",
-            report.memory.public_id, report.summary_tokens
+            "summarized: {} ({} tokens, rouge_l {:.3})",
+            report.memory.public_id, report.summary_tokens, report.quality_score
         );
         println!("summary: {}", report.summary_text);
     } else if let Some(t) = tier {
         let reports = summarize_tier(&store, &llm, cfg, &t).await?;
         println!("summarized {} memories in tier '{}'", reports.len(), t);
         for r in &reports {
-            println!("  {} ({} tokens)", r.memory.public_id, r.summary_tokens);
+            println!(
+                "  {} ({} tokens, rouge_l {:.3})",
+                r.memory.public_id, r.summary_tokens, r.quality_score
+            );
         }
     } else if all {
         // Summarize all tiers
@@ -730,8 +733,8 @@ async fn summarize_cmd(
             total += reports.len();
             for r in &reports {
                 println!(
-                    "  [{}] {} ({} tokens)",
-                    tier, r.memory.public_id, r.summary_tokens
+                    "  [{}] {} ({} tokens, rouge_l {:.3})",
+                    tier, r.memory.public_id, r.summary_tokens, r.quality_score
                 );
             }
         }
