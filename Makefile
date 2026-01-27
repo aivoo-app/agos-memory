@@ -20,7 +20,7 @@
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-.PHONY: help check fmt lint test test-fast build bench eval gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 plan-guard ci smoke
+.PHONY: help check fmt lint test test-fast build bench bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 plan-guard ci smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -93,8 +93,14 @@ eval: ## Offline eval gate — hermetic (hash embedder): precision ≥0.90, reca
 		--min-precision 0.90 --min-recall 0.95 --min-mrr 0.80 --json; \
 	rm -rf $$DIR
 
+eval-summarize: ## Offline summarize-quality gate — mean ROUGE-L ≥ 0.85 over fixtures/summarize_cases.jsonl (hermetic: MockChat)
+	cargo test --test summarize_quality -- --nocapture
+
 bench: ## Release perf gate: recall p95 < 150 ms (@10k: AGOS_BENCH_VECTORS=10000)
 	cargo bench --bench recall_bench
+
+bench-consolidate: ## Release consolidation bench (0049): summarize quality/speed, dedup, TTL reaper
+	cargo bench --bench consolidate_bench
 
 gate-v0.3.0: ## v0.3.0 milestone gate (fmt + clippy -D + tests + plan-guard + build + smoke + eval + bench)
 	cargo fmt --all -- --check
@@ -106,7 +112,7 @@ gate-v0.3.0: ## v0.3.0 milestone gate (fmt + clippy -D + tests + plan-guard + bu
 	$(MAKE) eval
 	$(MAKE) bench
 
-gate-v0.4.0: ## v0.4.0 milestone gate (fmt + clippy -D + tests + plan-guard + release + smoke + eval)
+gate-v0.4.0: ## v0.4.0 milestone gate (fmt + clippy -D + tests + plan-guard + release + smoke + eval + eval-summarize)
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
@@ -114,6 +120,7 @@ gate-v0.4.0: ## v0.4.0 milestone gate (fmt + clippy -D + tests + plan-guard + re
 	cargo build --release
 	$(MAKE) smoke
 	$(MAKE) eval
-	@echo "gate-v0.4.0: perf bench is the separate release gate — run \`make bench\`"
+	$(MAKE) eval-summarize
+	@echo "gate-v0.4.0: perf benches are separate release gates — run \`make bench\` and \`make bench-consolidate\`"
 
 ci: plan-guard check ## CI pipeline (offline; no provider access needed)
