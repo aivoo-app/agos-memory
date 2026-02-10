@@ -59,10 +59,13 @@ pub async fn run_consolidation_job(
 /// Re-run cosine dedup across all active memories.
 ///
 /// For each pair of memories in the same tier, computes the cosine similarity
-/// of their deterministic unit-embedding vectors (`hash_to_unit_vector`, the
-/// same proxy used by the write-path dedup in `persist.rs`). When similarity
-/// meets or exceeds `memory.dedup_threshold`, merges the cluster: bumps
-/// `ref_count` on the cluster owner and tags the newcomer with the cluster id.
+/// of their **stored** `vec_memories` embeddings (issue 0056) — the same
+/// vectors the write path (`persist.rs` KNN) and recall use. Memories without
+/// a stored vector (degraded writes, `provider='none'`) fall back to the
+/// deterministic `hash_to_unit_vector` proxy over the text, so consolidation
+/// still merges verbatim duplicates offline. When similarity meets or exceeds
+/// `memory.dedup_threshold`, merges the cluster: bumps `ref_count` on the
+/// cluster owner and tags the newcomer with the cluster id.
 ///
 /// Returns the number of clusters merged.
 async fn dedup_consolidation(store: &StoreHandle, config: &Config) -> Result<u64> {
@@ -70,11 +73,13 @@ async fn dedup_consolidation(store: &StoreHandle, config: &Config) -> Result<u64
     let dim = store.embed_dim().await?;
     let memories = store.all_active_memories_for_dedup().await?;
 
-    // Pre-compute a unit vector for every active memory (deterministic, no
-    // network call — same proxy as write-path dedup).
+    // Prefer the stored embedding; fall back to the deterministic text proxy.
     let mut mem_data: Vec<(i64, String, String, Vec<f32>)> = Vec::with_capacity(memories.len());
-    for (id, public_id, tier, text, _text_hash) in &memories {
-        let vec = hash_to_unit_vector(text, dim);
+    for (id, public_id, tier, text, _text_hash, embedding) in &memories {
+        let vec = embedding
+            .as_deref()
+            .and_then(|blob| decode_f32_blob(blob, dim))
+            .unwrap_or_else(|| hash_to_unit_vector(text, dim));
         mem_data.push((*id, public_id.clone(), tier.clone(), vec));
     }
 
@@ -104,6 +109,21 @@ async fn dedup_consolidation(store: &StoreHandle, config: &Config) -> Result<u64
     }
 
     Ok(merged)
+}
+
+/// Decode a `vec_memories` embedding blob (little-endian f32s) into a vector.
+///
+/// Returns `None` when the blob's length doesn't match `dim` — the row is then
+/// treated as vectorless and dedup falls back to the text proxy.
+fn decode_f32_blob(blob: &[u8], dim: usize) -> Option<Vec<f32>> {
+    if blob.len() != dim * 4 {
+        return None;
+    }
+    Some(
+        blob.chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect(),
+    )
 }
 
 /// Cosine similarity of two unit vectors (dot product, clamped to [-1, 1]).
@@ -138,5 +158,15 @@ mod tests {
         let a = vec![1.0_f32, 0.0, 0.0];
         let b = vec![0.0_f32, 1.0, 0.0];
         assert!((cosine_similarity(&a, &b)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn decode_f32_blob_roundtrip() {
+        let v = vec![0.5_f32, -1.25, 2.0, 0.0];
+        let blob: Vec<u8> = v.iter().flat_map(|f| f.to_le_bytes()).collect();
+        assert_eq!(decode_f32_blob(&blob, 4).unwrap(), v);
+        // Wrong length → treated as vectorless (fallback path).
+        assert!(decode_f32_blob(&blob, 8).is_none());
+        assert!(decode_f32_blob(&blob[..6], 1).is_none());
     }
 }

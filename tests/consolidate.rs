@@ -145,9 +145,80 @@ async fn dedup_consolidation_merges_similar() {
 }
 
 #[tokio::test]
+async fn cosine_dedup_merges_similar_vectors() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StoreHandle::open(&test_config(&dir.path().join("vec-dedup.db")), 1)
+        .await
+        .unwrap();
+
+    // Two memories with stored, near-identical vec_memories vectors (same
+    // one-hot index → cosine 1.0). 0056: dedup must score the STORED
+    // embeddings, not a recomputed text proxy.
+    let row1 = make_memory(&store, "stored vector memory one", "semantic").await;
+    let row2 = make_memory(&store, "stored vector memory two", "semantic").await;
+    attach_one_hot_vector(&store, row1.id, 100).await;
+    attach_one_hot_vector(&store, row2.id, 100).await;
+
+    let llm: Arc<dyn agos_memory::llm::ChatClient> = Arc::new(MockChat::default());
+    let cfg = Config::default();
+    let report = agos_memory::memory::run_consolidation_job(&store, &llm, &cfg)
+        .await
+        .unwrap();
+    assert!(
+        report.dedup_clusters_merged >= 1,
+        "identical stored vectors must merge (got {})",
+        report.dedup_clusters_merged
+    );
+}
+
+#[tokio::test]
+async fn cosine_dedup_keeps_distinct_vectors() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StoreHandle::open(&test_config(&dir.path().join("vec-distinct.db")), 1)
+        .await
+        .unwrap();
+
+    // Orthogonal stored vectors (disjoint one-hot indices → cosine 0.0) must
+    // never merge, even though the texts share tokens.
+    let row1 = make_memory(&store, "shared wording memory alpha", "semantic").await;
+    let row2 = make_memory(&store, "shared wording memory beta", "semantic").await;
+    attach_one_hot_vector(&store, row1.id, 100).await;
+    attach_one_hot_vector(&store, row2.id, 900).await;
+
+    let llm: Arc<dyn agos_memory::llm::ChatClient> = Arc::new(MockChat::default());
+    let cfg = Config::default();
+    let report = agos_memory::memory::run_consolidation_job(&store, &llm, &cfg)
+        .await
+        .unwrap();
+    assert_eq!(
+        report.dedup_clusters_merged, 0,
+        "orthogonal stored vectors must not merge"
+    );
+}
+
+/// Attach a one-hot `vec_memories` row (unit vector, `dim` = 1536 default) at
+/// `idx`, the way the write path would leave one behind.
+async fn attach_one_hot_vector(store: &StoreHandle, memory_id: i64, idx: usize) {
+    let mut v = vec![0.0f32; 1536];
+    v[idx] = 1.0;
+    let blob: Vec<u8> = v.iter().flat_map(|f| f.to_le_bytes()).collect();
+    store
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO vec_memories(rowid, embedding, tier, status, trust, kind, pinned)
+                 VALUES (?1, ?2, 'semantic', 0, 0, 'fact', 0)",
+                rusqlite::params![memory_id, blob],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn dedup_consolidation_does_not_merge_unrelated() {
     let dir = tempfile::tempdir().unwrap();
-    let store = StoreHandle::open(&test_config(&dir.path().join("dedup.db")), 1)
+    let store = StoreHandle::open(&test_config(&dir.path().join("dedup-unrelated.db")), 1)
         .await
         .unwrap();
 

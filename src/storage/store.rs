@@ -1278,16 +1278,24 @@ impl StoreHandle {
     /// Returns (memory_id, public_id, tier, text, text_hash) for all active memories.
     pub async fn all_active_memories_for_dedup(
         &self,
-    ) -> Result<Vec<(i64, String, String, String, String)>> {
+    ) -> Result<Vec<(i64, String, String, String, String, Option<Vec<u8>>)>> {
         self.read(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, public_id, tier, text, text_hash
-                 FROM memories
-                 WHERE status = 'active'
-                 ORDER BY tier, id",
+                "SELECT m.id, m.public_id, m.tier, m.text, m.text_hash, v.embedding
+                 FROM memories m
+                 LEFT JOIN vec_memories v ON v.rowid = m.id
+                 WHERE m.status = 'active'
+                 ORDER BY m.tier, m.id",
             )?;
             let rows = stmt.query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
             })?;
             Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
