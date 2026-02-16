@@ -48,6 +48,35 @@ delete it while a process is running.
 
 `AGOS_MEMORY_LOG=debug agos-memory doctor` (same syntax as RUST_LOG).
 
+## Retention & forgetting (v0.4.0)
+
+Full reference: `docs/forget.md`. Operator quick reference:
+
+```sh
+agos-memory forget soft <pid>            # deprecate (recoverable)
+agos-memory forget restore <pid>         # undo a soft deprecate
+agos-memory forget hard <pid> --reason   # verified purge + VACUUM + tombstone
+agos-memory forget rollback <pid> --to-version <n>
+agos-memory forget list-tombstones
+agos-memory forget list-audit --action ttl_purge --limit 20
+agos-memory maintain --ttl               # run the TTL reaper now
+agos-memory maintain --consolidate       # summarize pass + dedup + orphan cleanup
+agos-memory maintain --schedule          # foreground scheduler (reaper_hour, [consolidate])
+agos-memory summarize --id <pid> --force
+```
+
+- **Hard purges are final.** The tombstone row is the only residue, and it is
+  append-only (schema-v4 triggers abort any UPDATE/DELETE). Verify a purge by
+  replaying the tombstone row counts against `status`.
+- **Automated vs manual actions** are distinguishable in `list-audit`
+  (`ttl_deprecate`/`ttl_purge` come from the reaper; requester `ttl-reaper`).
+- **Retention knobs** live under `[memory]` (`ttl_<tier>_days`,
+  `ttl_grace_days`, `reaper_hour`) and `[consolidate]` (day/hour). Nothing is
+  auto-purged before the grace period elapses.
+- **Backups and purges interact**: a tombstone exists only in the live DB.
+  Restoring an old snapshot resurrects the memory rows a purge removed —
+  re-run `forget hard` after restoring if the deletion must be preserved.
+
 ## Exit codes
 
 | Code | Meaning |

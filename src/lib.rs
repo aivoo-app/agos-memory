@@ -15,7 +15,9 @@
 //! - [`util`] — clock, token counter, hashing
 //!
 //! The write path (extraction pipeline, sessions) is v0.2.0; the recall path
-//! (hybrid FTS5 + vector retrieval) is v0.3.0. See `docs/architecture.md`.
+//! (hybrid FTS5 + vector retrieval) is v0.3.0; consolidation & forgetting
+//! (summaries, versioning, verified deletion, TTL) is v0.4.0. See
+//! `docs/architecture.md` and `docs/forget.md`.
 
 pub mod cli;
 pub mod config;

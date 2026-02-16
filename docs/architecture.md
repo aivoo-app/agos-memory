@@ -113,11 +113,17 @@ matters:
 - Write path (v0.2.0, **shipped**): see above — sessions/turns, extraction via
   `ChatClient`, durable jobs with DLQ, redaction, cosine dedup, confidence-gated
   `pending` status.
-- Recall (v0.3.0): embed -> KNN + BM25 -> hard filter -> rerank
+- Recall (v0.3.0, **shipped**): embed -> KNN + BM25 -> hard filter -> rerank
   (`w1*sim + w2*importance + w3*decay`) -> tier-split packing -> fenced
-  citations; no-hit returns explicit empties; everything audited.
-- Forgetting (v0.4.0): soft deprecation by default; hard delete purges row +
-  FTS + vector + versions, then `secure_delete` + `VACUUM` + tombstone.
+  citations; no-hit returns explicit empties; everything audited. Full math
+  spec in [recall.md](recall.md).
+- Consolidation & forgetting (v0.4.0, **shipped**): summaries with a ROUGE-L
+  quality gate, version rollback, verified deletion (fail-closed purge +
+  `VACUUM` + tombstones, append-only ledgers), per-tier TTL with grace +
+  reaper, and a consolidation job (summarize pass + stored-vector dedup +
+  orphan cleanup) driven by the `maintain` job kind and a foreground
+  scheduler. Full spec in [forget.md](forget.md); rationale in
+  [ADR-008](adr/008-verified-deletion-and-consolidation.md).
 
 [ADR-001]: adr/001-why-rust-memory-store.md
 [ADR-002]: adr/002-embedding-pluggable-and-pinned.md

@@ -176,10 +176,7 @@ async fn stored_summary_feeds_recall_packing() {
         .unwrap();
     let summary = updated.summary_text.expect("summary stored");
     assert!(!summary.is_empty());
-    assert!(
-        updated.summary_tokens > 0,
-        "tokens stored for budgeting"
-    );
+    assert!(updated.summary_tokens > 0, "tokens stored for budgeting");
     // Summary must be shorter than the source — the whole point of a summary.
     assert!(
         updated.summary_tokens < updated.text.len() as i64,

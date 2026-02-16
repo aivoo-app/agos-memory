@@ -4,10 +4,11 @@ Self-hosted agent memory manager: durable, tiered, citation-backed memory for
 AI agents. One SQLite database per agent; MCP + HTTP interfaces; OpenAI-
 compatible embeddings and LLMs via [agos-proxy].
 
-Status: **v0.1.1 — Foundation + gate integrity** (storage, migrations,
-sqlite-vec, single-writer store, verified backups, full test suites, CI).
-The write path (extraction pipeline) lands in v0.2.0; recall in v0.3.0;
-MCP/HTTP in v0.5.0. See `docs/architecture.md` and `docs/roadmap.md`.
+Status: **v0.4.0 — Consolidation & forgetting** (summaries + ROUGE-L quality
+gate, versioning/rollback, verified deletion with tombstones, TTL retention +
+reaper, consolidation job, scheduler). The write path is v0.2.0 (shipped);
+recall is v0.3.0 (shipped); MCP/HTTP is v0.5.0. See `docs/architecture.md`,
+`docs/forget.md`, and `docs/roadmap.md`.
 
 ## Why
 

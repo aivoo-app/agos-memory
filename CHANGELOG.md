@@ -4,6 +4,62 @@ All notable changes to agos-memory are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/); versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.0] — 2026-09-22
+
+Consolidation & forgetting: summaries, versioning, verified deletion, TTL retention.
+
+### Added
+- **Summarization** (`agos_memory::memory::summarize`): on-demand (`summarize_by_id`,
+  `summarize_tier`) and periodic (`run_summarization_job`) generation with per-tier
+  `summarize_after_days` eligibility; summaries stored on the memory row
+  (`summary_text`, `summary_tokens`) and consumed by recall packing's summary-swap (D25).
+- **Summarization CLI (0048)**: `summarize --id/--tier/--all/--force`; the LLM is built
+  from `[llm]` config (`chat_from_config`), falling back to `MockChat` when offline.
+- **Quality gate (0049)**: `agos_memory::eval::rouge_l` (LCS F1, case/punctuation
+  insensitive) + `SummarizeReport::quality_score`; hermetic 100-case fixture gate
+  (`fixtures/summarize_cases.jsonl`, `make eval-summarize`) asserting mean ROUGE-L
+  ≥ 0.85 (measured: 0.913). The gate proves the summarize + score pipeline offline;
+  live-model quality runs are provider-backed, not the CI gate.
+- **Memory versioning (0042)**: every update appends a `memory_versions` row with
+  `diff_json`; `rollback_memory` creates a new head from an old version, chain intact;
+  `forget rollback <pid> --to-version <n>` CLI.
+- **Verified deletion (0054)**: FK-safe `hard_purge_memory` (links both directions,
+  versions, recall items, pins, vector, FTS-triggered) in one transaction with
+  fail-closed per-table row-count verification, real `VACUUM` + `wal_checkpoint`,
+  and a `tombstones` row. Schema v4 adds database-enforced immutability triggers on
+  `tombstones` and `forget_audit`.
+- **TTL retention (0044/0047)**: per-tier `ttl_<tier>_days`, grace period, and the
+  TTL reaper — expired active memories are soft-deprecated with `ttl_deprecate` audit
+  rows; deprecated memories past grace are hard-purged with `ttl_purge` audit rows.
+- **Consolidation job (0045)**: summarization pass + cosine dedup + orphan-version
+  cleanup, idempotent, configurable via `[consolidate]`.
+- **Jobs, worker, scheduler (0055)**: worker `extract` handler (payload
+  `{"session": N}`); consolidation folded into the `maintain` kind via payload
+  (D35 — no schema CHECK change); `session close`/`idle-close` enqueue extraction
+  best-effort; foreground scheduler (`maintain --schedule`) honoring
+  `[memory] reaper_hour` and `[consolidate] day/hour` with pure-function
+  `scheduler_tick` unit tests.
+- **Consolidation benchmarks (0049)**: `benches/consolidate_bench.rs` (Criterion) and
+  `tests/consolidate_bench.rs` (integration rate gates): batch summarize ≥ 100 mem/s,
+  TTL reaper ≥ 1000 memories/s (release-profile gated, `AGOS_BENCH_ASSERT=1` opt-in).
+
+### Fixed
+- **Consolidation dedup uses stored embeddings (0056)**: cosine over the
+  `vec_memories` blob (LEFT JOIN) — the same vectors persist/recall score — falling
+  back to the deterministic text proxy only when a memory has no stored vector.
+- **agent_id on every insert path** (found by the 0052 eval harness): writes no
+  longer fall back to the `'default'` schema value, which made them invisible to
+  recall for any other agent.
+- **Recall bench p95 assertion** is release-profile gated (or `AGOS_BENCH_ASSERT=1`)
+  so debug `cargo test --all-targets` runs the bench without flaky perf assertions.
+- Clippy warnings across tests, benches, and lib (unused imports, `flat_map`
+  patterns, `!hits.is_empty()`).
+
+### Changed
+- `version = "0.4.0"`; Makefile gains `eval-summarize` and `bench-consolidate`;
+  `gate-v0.4.0` runs the summarize-quality gate; CI runs both perf benches on push.
+- Deterministic `hash` embedder provider added for offline runs (0052).
+
 ## [0.3.0] — 2026-09-21
 
 The recall path: hybrid retrieval, hard filters, rerank, packing, audit, citations.
