@@ -120,7 +120,7 @@ fn decode_f32_blob(blob: &[u8], dim: usize) -> Option<Vec<f32>> {
         return None;
     }
     Some(
-        blob.chunks_exact(4)
+        blob.chunks(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     )
