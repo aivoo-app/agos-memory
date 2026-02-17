@@ -14,6 +14,7 @@ use common::{NormEmbedder, store};
 
 const QUERY: &str = "vehicle maintenance log";
 
+/// Build a RecallQuery with default config.
 fn query() -> RecallQuery {
     RecallQuery::new(QUERY, &RecallConfig::default())
 }
@@ -40,7 +41,7 @@ async fn seed(store: &StoreHandle, text: &str) -> String {
             )?;
             let id = conn.last_insert_rowid();
             // Insert a unit vector for vec leg matching
-            let blob: Vec<u8> = (0..1536).map(|_| 1.0f32.to_le_bytes()).flatten().collect();
+            let blob: Vec<u8> = (0..1536).flat_map(|_| 1.0f32.to_le_bytes()).collect();
             conn.execute(
                 "INSERT INTO vec_memories(rowid, embedding, tier, status, trust, kind, pinned)
                  VALUES (?1, ?2, 'semantic', 0, 0, 'fact', 0)",

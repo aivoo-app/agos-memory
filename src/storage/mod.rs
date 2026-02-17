@@ -17,5 +17,5 @@ pub mod writer;
 
 pub use audit::{RecallAuditInput, RecallAuditOut};
 pub use pool::ReadPool;
-pub use store::{MemoryRow, NewMemory, SnapshotReport, Store, StoreHandle};
+pub use store::{MemoryRow, MemoryVersion, NewMemory, SnapshotReport, Store, StoreHandle};
 pub use writer::WriterHandle;

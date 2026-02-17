@@ -14,6 +14,7 @@ is the repo-visible source of truth).
 | v0.6.0 | Proof & hardening: 100k load test <300ms, cost report, poisoning tests, backup/restore drill, eval regression gate, pgvector ADR, soak test | all §10 numbers published |
 | v1.0.0 | Release | every "Done Means" item evidenced |
 
-Status: v0.1.0 shipped (storage, migrations, sqlite-vec, single-writer store,
-eval harness, CLI); v0.1.1 closes the gate-integrity debt; the write path
-(extraction pipeline) lands in v0.2.0.
+Status: v0.3.0 shipped (recall path, eval gate, perf bench); v0.4.0 shipped
+(consolidation & forgetting — summaries + ROUGE-L gate, versioning/rollback,
+verified deletion with tombstones, TTL retention + reaper, consolidation job,
+scheduler). MCP/HTTP interfaces are next in v0.5.0.

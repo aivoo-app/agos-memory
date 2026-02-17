@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use crate::error::{Error, Result};
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Ordered migration list. Index i-1 upgrades to version i.
 pub const MIGRATIONS: &[&str] = &[
@@ -75,6 +75,7 @@ pub const MIGRATIONS: &[&str] = &[
         ref_count           INTEGER NOT NULL DEFAULT 0,
         last_referenced_at  INTEGER,
         expires_at          INTEGER,
+        deleted_at          INTEGER,
         supersedes_id       INTEGER REFERENCES memories(id),
         superseded_by_id    INTEGER REFERENCES memories(id),
         source_kind         TEXT NOT NULL DEFAULT 'user'
@@ -106,6 +107,8 @@ pub const MIGRATIONS: &[&str] = &[
         source_turn_id     INTEGER REFERENCES turns(id),
         supersedes_version INTEGER,
         change_reason      TEXT,
+        diff_json          TEXT,
+        created_by         TEXT,
         created_at         INTEGER NOT NULL,
         UNIQUE (memory_id, version)
     );
@@ -226,7 +229,7 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE TABLE IF NOT EXISTS forget_audit (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
         action        TEXT NOT NULL
-                      CHECK (action IN ('deprecate','hard_delete','expire','purge')),
+                      CHECK (action IN ('deprecate','hard_delete','expire','purge','restore','ttl_deprecate','ttl_purge')),
         selector_json TEXT NOT NULL,
         memory_ids    TEXT NOT NULL,
         requester     TEXT NOT NULL,
@@ -239,12 +242,48 @@ pub const MIGRATIONS: &[&str] = &[
     );
 
     CREATE TABLE IF NOT EXISTS tombstones (
-        id        INTEGER PRIMARY KEY AUTOINCREMENT,
-        memory_id INTEGER NOT NULL,
-        text_hash TEXT NOT NULL,
-        reason    TEXT,
-        ts        INTEGER NOT NULL
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        public_id        TEXT NOT NULL,
+        agent_id         TEXT NOT NULL,
+        memory_id        INTEGER,
+        text_hash        TEXT NOT NULL,
+        deleted_at       INTEGER NOT NULL,
+        deleted_by       TEXT,
+        reason           TEXT,
+        rowcount_before  INTEGER NOT NULL,
+        rowcount_after   INTEGER NOT NULL,
+        vacuum_duration_ms INTEGER NOT NULL DEFAULT 0
     );
+    "#,
+    // v4 — immutability for the forgetting ledger (issue 0054, D33).
+    //
+    // Tombstones and the forget audit are append-only evidence: the purge
+    // path's verification claim is only trustworthy if no later UPDATE/DELETE
+    // can rewrite it. Enforced in the database, not just by convention.
+    r#"
+    CREATE TRIGGER IF NOT EXISTS tombstones_no_update
+    BEFORE UPDATE ON tombstones
+    BEGIN
+        SELECT RAISE(ABORT, 'tombstones are immutable (append-only)');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS tombstones_no_delete
+    BEFORE DELETE ON tombstones
+    BEGIN
+        SELECT RAISE(ABORT, 'tombstones are immutable (append-only)');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS forget_audit_no_update
+    BEFORE UPDATE ON forget_audit
+    BEGIN
+        SELECT RAISE(ABORT, 'forget_audit is immutable (append-only)');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS forget_audit_no_delete
+    BEFORE DELETE ON forget_audit
+    BEGIN
+        SELECT RAISE(ABORT, 'forget_audit is immutable (append-only)');
+    END;
     "#,
 ];
 

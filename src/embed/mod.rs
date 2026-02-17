@@ -35,9 +35,14 @@ pub trait Embedder: Send + Sync {
 
 /// Deterministic hash-based embedder for tests and offline evals.
 ///
-/// Maps the SHA-256 of the text onto a normalized unit vector of `dim`
-/// dimensions. Same text always yields the same vector; different texts are
-/// far apart in cosine terms with overwhelming probability at reasonable dims.
+/// Maps the text's word multiset onto a normalized unit vector of `dim`
+/// dimensions (hashed bag-of-words: each word hashes to one bucket, signed by
+/// a second hash bit). Same text always yields the same vector; texts sharing
+/// words are close in cosine terms, texts sharing none are near-orthogonal.
+/// This makes the hash embedder a usable **lexical similarity proxy** for the
+/// offline eval harness and benchmarks — no network or model access needed —
+/// but it is explicitly not a semantic embedding model and must never be
+/// mistaken for production embedding quality.
 pub struct HashEmbedder {
     model: String,
     dim: usize,
@@ -199,40 +204,69 @@ impl Embedder for OpenAiCompatEmbedder {
 
 /// Map text onto a deterministic pseudo-random unit vector.
 ///
-/// Uses a character-bigram accumulation model so that texts sharing many
-/// character bigrams produce more similar vectors. This gives the eval harness
-/// and tests a usable similarity signal without depending on a real embedding
-/// model.
+/// Uses a hashed bag-of-words model: the text is lowercased and split into
+/// alphanumeric words; each word hashes (FNV-1a) to one of `dim` buckets with
+/// a deterministic ±1 sign from a second hash bit, weighted by `1 + ln(count)`
+/// so repeated words matter more than single mentions. Texts sharing words
+/// are close in cosine terms; texts sharing no words are near-orthogonal.
+/// Short texts (fewer than two words) fall back to seeding from the full-text
+/// hash so they still produce a stable unit vector.
+///
+/// This gives the eval harness and tests a usable **lexical** similarity
+/// signal without depending on a real embedding model. It is a similarity
+/// proxy, not a semantic model: paraphrases with no shared words score no
+/// better than unrelated texts.
 pub fn hash_to_unit_vector(text: &str, dim: usize) -> Vec<f32> {
-    // Accumulate bigram contributions into `dim` buckets.
-    let mut buckets = vec![0.0f32; dim];
-    let bytes = text.as_bytes();
-    for window in bytes.windows(2) {
-        // Hash the bigram to a bucket index.
-        let h: u64 = ((window[0] as u64) << 8) | (window[1] as u64);
-        let idx = (h % dim as u64) as usize;
-        // Signed contribution: use the high bits for sign, low bits for magnitude.
-        let sign: f32 = if (h >> 4) & 1 == 0 { 1.0 } else { -1.0 };
-        let mag: f32 = ((h & 0xFF) as f32) / 255.0;
-        buckets[idx] += sign * mag;
+    debug_assert!(dim > 0, "hash embedder dim must be > 0");
+    let dim = dim.max(1);
+    let mut counts: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
+    let mut total_words = 0u32;
+    for word in text
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+    {
+        // FNV-1a over the word bytes: fast, deterministic, no crates needed.
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in word.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        *counts.entry(h).or_insert(0) += 1;
+        total_words += 1;
     }
-    // Also seed each dimension with a deterministic pseudo-random value derived
-    // from the full-text hash so that completely different texts are still
-    // orthogonal in expectation.
-    let seed_hex = sha256_hex(text);
-    let mut state = u64::from_le_bytes(
-        hex::decode(&seed_hex[..16])
-            .expect("hex prefix is valid")
-            .try_into()
-            .expect("8 bytes"),
-    );
-    for slot in buckets.iter_mut() {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        let base: f32 = ((state % 2_000_001) as f32 - 1_000_000.0) / 1_000_000.0;
-        // Blend the bigram signal (if any) with the random baseline.
-        *slot = *slot * 0.7 + base * 0.3;
+    let mut buckets = vec![0.0f32; dim];
+    if total_words == 0 {
+        // No words (empty/punctuation-only): stable fallback from the text hash
+        // so the output is still a deterministic unit vector.
+        let seed_hex = sha256_hex(text);
+        let mut state = u64::from_le_bytes(
+            hex::decode(&seed_hex[..16])
+                .expect("hex prefix is valid")
+                .try_into()
+                .expect("8 bytes"),
+        );
+        if state == 0 {
+            state = 0x9e3779b97f4a7c15;
+        }
+        for slot in buckets.iter_mut() {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *slot = ((state % 2_000_001) as f32 - 1_000_000.0) / 1_000_000.0;
+        }
+    } else {
+        for (h, count) in counts {
+            let idx = (h % dim as u64) as usize;
+            // Sign from a high bit of a re-mixed hash (independent of bucket).
+            let mut z = h
+                .wrapping_mul(0x9e3779b97f4a7c15)
+                .wrapping_add(0xbf58476d1ce4e5b9);
+            z ^= z >> 29;
+            let sign: f32 = if z & (1 << 32) == 0 { 1.0 } else { -1.0 };
+            let weight = 1.0 + (count as f32).ln();
+            buckets[idx] += sign * weight;
+        }
     }
 
     let norm = buckets.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -245,15 +279,18 @@ pub fn hash_to_unit_vector(text: &str, dim: usize) -> Vec<f32> {
 
 /// Build an [`Embedder`] from the CLI/Config embedding settings.
 ///
-/// Returns `NoEmbedder` when `provider = "none"`, otherwise returns
-/// `OpenAiCompatEmbedder` pointed at the configured base_url/model/dim.
-/// The `dim` is read from the store's `meta` table (pinned at init).
+/// `provider = "none"` yields `NoEmbedder` (degraded keyword-only mode);
+/// `provider = "hash"` yields the deterministic in-process [`HashEmbedder`]
+/// (offline evals/benches); otherwise `OpenAiCompatEmbedder` is built for the
+/// configured base_url/model. The `dim` comes from the store's `meta` table
+/// (pinned at init).
 pub fn embedder_from_config(embed: &crate::config::EmbedConfig, dim: usize) -> Box<dyn Embedder> {
     use crate::config::EmbedProvider;
     use crate::http::HttpConfig;
 
     match embed.provider {
         EmbedProvider::None => Box::new(NoEmbedder),
+        EmbedProvider::Hash => Box::new(HashEmbedder::new(dim)),
         EmbedProvider::OpenAiCompat => {
             let http = HttpConfig::new(
                 embed.base_url.clone(),

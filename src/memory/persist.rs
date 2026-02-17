@@ -32,10 +32,10 @@ fn blob(vec: &[f32]) -> Vec<u8> {
 /// Trust: `source_kind` web/tool/import forces `trust='untrusted'`.
 /// Low confidence (< `pending_threshold`) forces `status='pending'`.
 /// Text is redacted BEFORE embedding so secrets never reach the provider.
-pub async fn persist_candidate<E: Embedder>(
+pub async fn persist_candidate(
     store: &StoreHandle,
     cand: &Candidate,
-    embedder: &E,
+    embedder: &dyn Embedder,
     extractor_version: &str,
 ) -> Result<PersistReport> {
     persist_candidate_full(
@@ -51,8 +51,11 @@ pub async fn persist_candidate<E: Embedder>(
 }
 
 /// Full variant with provenance + thresholds (issue 0029).
+///
+/// `E: ?Sized` so callers holding an owned `Box<dyn Embedder>` (CLI, eval
+/// runner) can pass `&*embedder` without cloning the embedder.
 #[allow(clippy::too_many_arguments)]
-pub async fn persist_candidate_full<E: Embedder>(
+pub async fn persist_candidate_full<E: Embedder + ?Sized>(
     store: &StoreHandle,
     cand: &Candidate,
     embedder: &E,
@@ -71,6 +74,11 @@ pub async fn persist_candidate_full<E: Embedder>(
     let cand = cand.clone();
     let ver = extractor_version.to_string();
     let source_owned = source_kind.to_string();
+    // Multi-agent isolation (D11/R8): every memory is stamped with the store's
+    // agent. Omitting this column silently fell back to the schema default
+    // `'default'`, which made writes invisible to recall for any other agent
+    // (found by the end-to-end eval harness, issue 0052).
+    let agent_owned = store.agent_id().to_string();
     let report = store
         .write(move |conn| {
             let now = Clock::now_millis(&SystemClock);
@@ -116,7 +124,7 @@ pub async fn persist_candidate_full<E: Embedder>(
                         rusqlite::params![rowid, now],
                     )?;
                     let row = conn.query_row(
-                        "SELECT id, public_id, tier, kind, text, status, trust, created_at
+                        "SELECT id, public_id, tier, kind, text, status, trust, created_at, updated_at, summary_text, summary_tokens
                          FROM memories WHERE id = ?1",
                         [rowid],
                         |r| {
@@ -129,6 +137,9 @@ pub async fn persist_candidate_full<E: Embedder>(
                                 status: r.get(5)?,
                                 trust: r.get(6)?,
                                 created_at: r.get(7)?,
+                                updated_at: r.get(8)?,
+                                summary_text: r.get(9)?,
+                                summary_tokens: r.get(10).unwrap_or(0),
                             })
                         },
                     )?;
@@ -163,13 +174,14 @@ pub async fn persist_candidate_full<E: Embedder>(
                 _ => unreachable!(),
             };
             conn.execute(
-                "INSERT INTO memories (public_id, tier, kind, text, text_hash,
+                "INSERT INTO memories (public_id, agent_id, tier, kind, text, text_hash,
                  status, trust, source_kind, extractor_version, embed_model,
                  embed_dim, embed_status, ref_count, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                 ?9, ?10, ?11, 'ok', 0, ?12, ?12)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                 ?10, ?11, ?12, 'ok', 0, ?13, ?13)",
                 rusqlite::params![
                     &pid2,
+                    &agent_owned,
                     &cand.tier,
                     &cand.kind,
                     &cand.text,
@@ -185,8 +197,9 @@ pub async fn persist_candidate_full<E: Embedder>(
             )?;
             let id = conn.last_insert_rowid();
             conn.execute(
-                "INSERT INTO memory_versions (memory_id, version, text, text_hash, created_at)
-                 VALUES (?1, 1, ?2, ?3, ?4)",
+                "INSERT INTO memory_versions (memory_id, version, text, text_hash, source_turn_id,
+                        supersedes_version, change_reason, diff_json, created_by, created_at)
+                 VALUES (?1, 1, ?2, ?3, NULL, NULL, NULL, NULL, NULL, ?4)",
                 rusqlite::params![id, &cand.text, &hash, now],
             )?;
             conn.execute(
@@ -204,6 +217,9 @@ pub async fn persist_candidate_full<E: Embedder>(
                     status: status.into(),
                     trust: trust.into(),
                     created_at: now,
+                    updated_at: now,
+                    summary_text: None,
+                    summary_tokens: 0,
                 },
                 deduped: false,
             })
@@ -277,6 +293,8 @@ async fn persist_candidate_no_vector(
     cand.text = crate::memory::redact::redact(&cand.text);
     let ver = extractor_version.to_string();
     let source_owned = source_kind.to_string();
+    // Same agent stamping as the embedded path (see `persist_candidate_full`).
+    let agent_owned = store.agent_id().to_string();
     let report = store
         .write(move |conn| {
             let now = Clock::now_millis(&SystemClock);
@@ -303,7 +321,7 @@ async fn persist_candidate_no_vector(
                     rusqlite::params![id, now],
                 )?;
                 let row = conn.query_row(
-                    "SELECT id, public_id, tier, kind, text, status, trust, created_at
+                    "SELECT id, public_id, tier, kind, text, status, trust, created_at, updated_at, summary_text, summary_tokens
                      FROM memories WHERE id = ?1",
                     [id],
                     |r| {
@@ -316,6 +334,9 @@ async fn persist_candidate_no_vector(
                             status: r.get(5)?,
                             trust: r.get(6)?,
                             created_at: r.get(7)?,
+                            updated_at: r.get(8)?,
+                            summary_text: r.get(9)?,
+                            summary_tokens: r.get(10).unwrap_or(0),
                         })
                     },
                 )?;
@@ -333,12 +354,13 @@ async fn persist_candidate_no_vector(
                 "active"
             };
             conn.execute(
-                "INSERT INTO memories (public_id, tier, kind, text, text_hash,
+                "INSERT INTO memories (public_id, agent_id, tier, kind, text, text_hash,
                  status, trust, source_kind, extractor_version, embed_status,
                  ref_count, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?11)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?12)",
                 rusqlite::params![
                     &pid,
+                    &agent_owned,
                     &cand.tier,
                     &cand.kind,
                     &cand.text,
@@ -353,8 +375,9 @@ async fn persist_candidate_no_vector(
             )?;
             let id = conn.last_insert_rowid();
             conn.execute(
-                "INSERT INTO memory_versions (memory_id, version, text, text_hash, created_at)
-                 VALUES (?1, 1, ?2, ?3, ?4)",
+                "INSERT INTO memory_versions (memory_id, version, text, text_hash, source_turn_id,
+                        supersedes_version, change_reason, diff_json, created_by, created_at)
+                 VALUES (?1, 1, ?2, ?3, NULL, NULL, NULL, NULL, NULL, ?4)",
                 rusqlite::params![id, &cand.text, &hash, now],
             )?;
             Ok(PersistReport {
@@ -367,6 +390,9 @@ async fn persist_candidate_no_vector(
                     status: status.into(),
                     trust: trust.into(),
                     created_at: now,
+                    updated_at: now,
+                    summary_text: None,
+                    summary_tokens: 0,
                 },
                 deduped: false,
             })

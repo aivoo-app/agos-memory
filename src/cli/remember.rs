@@ -4,12 +4,21 @@ use crate::config::{Config, EmbedProvider};
 use crate::embed::OpenAiCompatEmbedder;
 use crate::error::{Error, Result};
 use crate::http::HttpConfig;
-use crate::memory::{self, sessions};
+use crate::memory::{self, jobs, sessions};
 use crate::storage::StoreHandle;
 use crate::{defaults, observe};
 
 async fn open_store(cfg: &Config) -> Result<StoreHandle> {
     StoreHandle::open(cfg, defaults::READ_POOL_SIZE).await
+}
+
+/// Enqueue an `extract` job for a session (best-effort — never fails the
+/// caller). The worker picks it up later and runs the real extractor.
+async fn enqueue_extract(store: &StoreHandle, session_id: i64) {
+    let payload = serde_json::json!({"session": session_id}).to_string();
+    if let Err(e) = jobs::enqueue(store, "extract", &payload, None).await {
+        eprintln!("warning: failed to enqueue extract job for session {session_id}: {e}");
+    }
 }
 
 /// `remember --text …`: one fact in, one memory out.
@@ -35,6 +44,26 @@ pub async fn run_remember(
                 confidence,
                 observe::EXTRACTOR_VERSION,
                 cfg.memory.pending_threshold,
+            )
+            .await?
+        }
+        EmbedProvider::Hash => {
+            // Deterministic offline embedder (evals, benchmarks, local dev):
+            // same hybrid path as production, no provider involved.
+            let dim = store.embed_dim().await?;
+            let embedder = crate::embed::HashEmbedder::new(dim);
+            store.validate_embed_dim(&embedder).await?;
+            memory::remember(
+                &store,
+                tier,
+                kind,
+                text,
+                source_kind,
+                confidence,
+                &embedder,
+                observe::EXTRACTOR_VERSION,
+                cfg.memory.pending_threshold,
+                cfg.memory.dedup_threshold,
             )
             .await?
         }
@@ -134,12 +163,20 @@ pub async fn run_session(cfg: &Config, cmd: &super::root::SessionCmd) -> Result<
                     .ok_or_else(|| Error::InvalidInput("no open session".into()))?,
             };
             sessions::close_session(&store, id, "explicit").await?;
+            // 0055: enqueue extraction so the worker runs the extractor on the
+            // just-closed session's turns. Best-effort: the close is the user's
+            // action and must succeed even if the queue is misbehaving.
+            enqueue_extract(&store, id).await;
             println!("session closed");
             Ok(())
         }
         SessionCmd::IdleClose => {
-            let n = sessions::close_idle_sessions(&store, cfg.session.idle_minutes).await?;
-            println!("idle-closed: {n}");
+            let closed = sessions::close_idle_sessions(&store, cfg.session.idle_minutes).await?;
+            // 0055: enqueue extraction for every idle-closed session.
+            for s in &closed {
+                enqueue_extract(&store, *s).await;
+            }
+            println!("idle-closed: {}", closed.len());
             Ok(())
         }
     }

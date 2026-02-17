@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use crate::config::Config;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::storage::StoreHandle;
 
 /// Run backup against the resolved config.

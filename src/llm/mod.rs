@@ -162,6 +162,33 @@ impl ChatClient for OpenAiCompatChat {
     }
 }
 
+/// Build a chat client from the configured provider.
+///
+/// `provider = "none"` (or an empty `base_url` when offline) yields
+/// [`MockChat`], so the offline eval harness and CI never touch a network.
+/// Otherwise an [`OpenAiCompatChat`] is built against the configured
+/// base_url/model/api_key. The ledger sink is attached when one is given.
+pub fn chat_from_config(
+    cfg: &crate::config::LlmConfig,
+    ledger: Option<crate::embed::LedgerSink>,
+) -> std::sync::Arc<dyn ChatClient> {
+    if cfg.base_url.trim().is_empty() {
+        return std::sync::Arc::new(MockChat::default());
+    }
+    let http =
+        crate::http::HttpConfig::new(cfg.base_url.clone(), cfg.api_key.clone(), cfg.timeout_secs);
+    let model = if cfg.model.is_empty() {
+        "gpt-4o-mini".to_string()
+    } else {
+        cfg.model.clone()
+    };
+    let mut chat = OpenAiCompatChat::new(http, model);
+    if let Some(sink) = ledger {
+        chat = chat.with_ledger(sink);
+    }
+    std::sync::Arc::new(chat)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

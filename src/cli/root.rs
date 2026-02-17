@@ -6,7 +6,6 @@ use rusqlite::Connection;
 use crate::config::{
     BudgetSplit, Config, RecallConfig, RecallHalfLives, RecallWeights, TrustPolicy,
 };
-use crate::embed::embedder_from_config;
 use crate::error::Result;
 use crate::recall::RecallQuery;
 use crate::storage::schema;
@@ -123,6 +122,87 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Manage memory lifecycle: deprecate, restore, purge, audit.
+    Forget {
+        #[command(subcommand)]
+        cmd: ForgetCmd,
+    },
+    /// Summarize memories (on-demand).
+    Summarize {
+        /// Summarize a single memory by public id.
+        #[arg(long)]
+        id: Option<String>,
+        /// Summarize all memories in a tier.
+        #[arg(long)]
+        tier: Option<String>,
+        /// Summarize all memories without a summary.
+        #[arg(long)]
+        all: bool,
+        /// Overwrite existing summaries.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Run maintenance jobs (TTL reaper, consolidation).
+    Maintain {
+        /// Run the TTL reaper now.
+        #[arg(long)]
+        ttl: bool,
+        /// Run consolidation now.
+        #[arg(long)]
+        consolidate: bool,
+        /// Run the reaper/consolidation scheduler in the foreground, honoring
+        /// `[memory] reaper_hour` and `[consolidate]` from config.
+        #[arg(long)]
+        schedule: bool,
+    },
+}
+
+/// Forget subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ForgetCmd {
+    /// Soft-deprecate a memory (restorable).
+    Soft {
+        /// Public id of the memory to deprecate.
+        id: String,
+        /// Reason for deprecation.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Restore a soft-deprecated memory.
+    Restore {
+        /// Public id of the memory to restore.
+        id: String,
+    },
+    /// Hard-purge a memory (irreversible).
+    Hard {
+        /// Public id of the memory to purge.
+        id: String,
+        /// Reason for purge.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// List forget audit entries.
+    ListAudit {
+        /// Filter by action (deprecate, restore, hard_delete, ttl_deprecate, ttl_purge).
+        #[arg(long)]
+        action: Option<String>,
+        /// Only show entries since this timestamp (epoch millis).
+        #[arg(long)]
+        since: Option<i64>,
+        /// Limit number of results.
+        #[arg(long)]
+        limit: Option<i64>,
+    },
+    /// List tombstones (hard-purged memories).
+    ListTombstones,
+    /// Rollback a memory to a prior version (writes a new head; chain intact).
+    Rollback {
+        /// Public id of the memory to roll back.
+        id: String,
+        /// Target version number to restore (`--to-version`).
+        #[arg(long)]
+        to_version: i64,
+    },
 }
 
 /// Session subcommands.
@@ -209,6 +289,18 @@ pub async fn run(cli: Cli) -> Result<()> {
             min_mrr,
             json,
         } => eval_cmd(&cfg, file, min_precision, min_recall, min_mrr, json).await,
+        Command::Forget { cmd } => forget_cmd(&cfg, cmd).await,
+        Command::Summarize {
+            id,
+            tier,
+            all,
+            force,
+        } => summarize_cmd(&cfg, id, tier, all, force).await,
+        Command::Maintain {
+            ttl,
+            consolidate,
+            schedule,
+        } => maintain_cmd(&cfg, ttl, consolidate, schedule).await,
     }
 }
 
@@ -315,6 +407,7 @@ async fn doctor(cfg: &Config) -> Result<()> {
 }
 
 /// `recall` CLI command — runs hybrid recall and prints results.
+#[allow(clippy::too_many_arguments)]
 async fn recall_cmd(
     cfg: &Config,
     text: String,
@@ -458,7 +551,12 @@ async fn explain_cmd(cfg: &Config, id: String) -> Result<()> {
     Ok(())
 }
 
-/// `eval` CLI command — runs the offline eval suite.
+/// `eval` CLI command — runs the offline eval suite end-to-end.
+///
+/// Each case gets a fresh database; its corpus is seeded through the real
+/// write path (embed + dedup + version + vector row) and scored with the real
+/// recall path (issue 0052 — no stub, no id-only corpus). Failing cases are
+/// printed so a threshold miss is actionable.
 async fn eval_cmd(
     cfg: &Config,
     file: std::path::PathBuf,
@@ -467,58 +565,16 @@ async fn eval_cmd(
     min_mrr: f64,
     json: bool,
 ) -> Result<()> {
-    use crate::eval::{CaseResult, Metrics, load_cases};
+    use crate::eval::{load_cases, run, validate_cases};
 
     let cases = load_cases(&file)?;
+    validate_cases(&cases)?;
 
-    // For each case, we need to create a temp store with the corpus memories
-    // This is complex - we'll use the existing approach from tests
-    // For now, run eval by loading memories into a fresh store per case
-
-    let mut results = Vec::new();
-
-    for case in &cases {
-        // Create a temp store for this case
-        let dir = tempfile::tempdir().unwrap();
-        let mut case_cfg = cfg.clone();
-        case_cfg.db_path = dir.path().join("eval.db");
-
-        let store = crate::storage::StoreHandle::open(&case_cfg, defaults::READ_POOL_SIZE).await?;
-
-        // Build embedder
-        let dim = store.embed_dim().await?;
-        let embedder = crate::embed::embedder_from_config(&case_cfg.embed, dim);
-        store.validate_embed_dim(&*embedder).await?;
-
-        // Insert corpus memories
-        for _mem_id in &case.corpus {
-            // We'd need the actual memory text - in practice the corpus should contain full memories
-            // For now, we'll skip this and note it's a placeholder
-            // A proper implementation would have the corpus contain the full memory data
-        }
-
-        // Run recall
-        let query = crate::recall::RecallQuery::new(case.query.clone(), &case_cfg.recall);
-        let report = crate::recall::recall(&store, &*embedder, &query).await?;
-
-        let returned: Vec<String> = report
-            .hits
-            .iter()
-            .filter(|h| h.injected())
-            .map(|h| h.public_id.clone())
-            .collect();
-
-        results.push(CaseResult {
-            returned,
-            relevant: case.relevant.clone(),
-            forbidden: case.forbidden.clone(),
-        });
-    }
-
-    let metrics = Metrics::aggregate(&results);
+    let eval = run(cfg, &cases).await?;
+    let metrics = &eval.metrics;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&metrics)?);
+        println!("{}", serde_json::to_string_pretty(metrics)?);
     } else {
         println!("precision: {:.3}", metrics.precision);
         println!("recall:    {:.3}", metrics.recall);
@@ -527,9 +583,20 @@ async fn eval_cmd(
         println!("cases:     {}", metrics.cases);
     }
 
-    metrics
-        .check(min_precision, min_recall, min_mrr)
-        .map_err(crate::error::Error::InvalidInput)?;
+    if let Err(reason) = metrics.check(min_precision, min_recall, min_mrr) {
+        for outcome in eval.imperfect() {
+            eprintln!(
+                "case {}: query={:?} missed={:?} leaked={:?} returned={:?} relevant={:?}",
+                outcome.id,
+                outcome.query,
+                outcome.missed,
+                outcome.leaked,
+                outcome.returned,
+                outcome.relevant
+            );
+        }
+        return Err(crate::error::Error::InvalidInput(reason));
+    }
 
     Ok(())
 }
@@ -537,3 +604,329 @@ async fn eval_cmd(
 // `defaults` is re-exported for binary consumers; keep the import referenced.
 #[allow(unused_imports)]
 use defaults as _defaults;
+
+/// `forget` CLI command — manage memory lifecycle.
+async fn forget_cmd(cfg: &Config, cmd: ForgetCmd) -> Result<()> {
+    let store = crate::storage::StoreHandle::open(cfg, defaults::READ_POOL_SIZE).await?;
+    match cmd {
+        ForgetCmd::Soft { id, reason } => {
+            let row = store.get_memory(id.clone()).await?.ok_or_else(|| {
+                crate::error::Error::InvalidInput(format!("memory {id} not found"))
+            })?;
+            store.deprecate_memory(row.id, Some("agent")).await?;
+            println!("deprecated: {} ({})", row.public_id, row.status);
+            if let Some(r) = reason {
+                println!("reason: {r}");
+            }
+        }
+        ForgetCmd::Restore { id } => {
+            let row = store.get_memory(id.clone()).await?.ok_or_else(|| {
+                crate::error::Error::InvalidInput(format!("memory {id} not found"))
+            })?;
+            store.restore_memory(row.id, Some("agent")).await?;
+            println!("restored: {} ({})", row.public_id, row.status);
+        }
+        ForgetCmd::Hard { id, reason } => {
+            let row = store.get_memory(id.clone()).await?.ok_or_else(|| {
+                crate::error::Error::InvalidInput(format!("memory {id} not found"))
+            })?;
+            store
+                .hard_purge_memory(row.id, Some("agent"), reason.as_deref())
+                .await?;
+            println!("hard-purged: {} (tombstone written)", row.public_id);
+        }
+        ForgetCmd::ListAudit {
+            action,
+            since,
+            limit,
+        } => {
+            let entries = store.list_forget_audit(action, since, limit).await?;
+            println!("forget_audit entries: {}", entries.len());
+            for e in &entries {
+                println!(
+                    "  [{}] {} by {} at {}{}",
+                    e.id,
+                    e.action,
+                    e.requester,
+                    e.created_at,
+                    e.reason
+                        .as_deref()
+                        .map(|r| format!(" ({r})"))
+                        .unwrap_or_default()
+                );
+            }
+        }
+        ForgetCmd::Rollback { id, to_version } => {
+            let row = store.get_memory(id.clone()).await?.ok_or_else(|| {
+                crate::error::Error::InvalidInput(format!("memory {id} not found"))
+            })?;
+            if to_version < 1 {
+                return Err(crate::error::Error::InvalidInput(
+                    "to-version must be >= 1".into(),
+                ));
+            }
+            let rolled = store
+                .rollback_memory(row.id, to_version, Some("agent"))
+                .await?;
+            println!(
+                "rolled back: {} to v{} ({})",
+                rolled.public_id, to_version, rolled.status
+            );
+        }
+        ForgetCmd::ListTombstones => {
+            let tombstones = store.list_tombstones().await?;
+            println!("tombstones: {}", tombstones.len());
+            for t in &tombstones {
+                println!(
+                    "  [{}] {} (deleted_at={}, by={:?})",
+                    t.id, t.public_id, t.deleted_at, t.deleted_by
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `summarize` CLI command — on-demand summarization.
+///
+/// 0056: the LLM is built from config (`chat_from_config`), so a configured
+/// provider is used; offline (empty `base_url`) falls back to `MockChat`,
+/// mirroring `maintain_cmd`.
+async fn summarize_cmd(
+    cfg: &Config,
+    id: Option<String>,
+    tier: Option<String>,
+    all: bool,
+    force: bool,
+) -> Result<()> {
+    use crate::memory::summarize_by_id;
+    use crate::memory::summarize_tier;
+
+    let store = crate::storage::StoreHandle::open(cfg, defaults::READ_POOL_SIZE).await?;
+    let llm = crate::llm::chat_from_config(&cfg.llm, None);
+
+    if let Some(pid) = id {
+        let row = store
+            .get_memory(pid.clone())
+            .await?
+            .ok_or_else(|| crate::error::Error::InvalidInput(format!("memory {pid} not found")))?;
+        let report = summarize_by_id(&store, &llm, cfg, row.id, force).await?;
+        println!(
+            "summarized: {} ({} tokens, rouge_l {:.3})",
+            report.memory.public_id, report.summary_tokens, report.quality_score
+        );
+        println!("summary: {}", report.summary_text);
+    } else if let Some(t) = tier {
+        let reports = summarize_tier(&store, &llm, cfg, &t).await?;
+        println!("summarized {} memories in tier '{}'", reports.len(), t);
+        for r in &reports {
+            println!(
+                "  {} ({} tokens, rouge_l {:.3})",
+                r.memory.public_id, r.summary_tokens, r.quality_score
+            );
+        }
+    } else if all {
+        // Summarize all tiers
+        let mut total = 0;
+        for tier in ["working", "episodic", "semantic", "procedural"] {
+            let reports = summarize_tier(&store, &llm, cfg, tier).await?;
+            total += reports.len();
+            for r in &reports {
+                println!(
+                    "  [{}] {} ({} tokens, rouge_l {:.3})",
+                    tier, r.memory.public_id, r.summary_tokens, r.quality_score
+                );
+            }
+        }
+        println!("summarized {} memories total", total);
+    } else {
+        return Err(crate::error::Error::InvalidInput(
+            "specify --id, --tier, or --all".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// `maintain` CLI command — run maintenance jobs, or the scheduler.
+///
+/// 0055: the LLM is built from config (`chat_from_config`), so a configured
+/// provider is used; offline (empty `base_url`) falls back to `MockChat`.
+/// `--schedule` runs the foreground scheduler that honors `[memory]
+/// reaper_hour` and `[consolidate]`, enqueuing `maintain` jobs for the worker.
+async fn maintain_cmd(cfg: &Config, ttl: bool, consolidate: bool, schedule: bool) -> Result<()> {
+    let store = crate::storage::StoreHandle::open(cfg, defaults::READ_POOL_SIZE).await?;
+    let llm = crate::llm::chat_from_config(&cfg.llm, None);
+
+    if schedule {
+        return run_scheduler(&store, cfg).await;
+    }
+
+    if !ttl && !consolidate {
+        return Err(crate::error::Error::InvalidInput(
+            "specify --ttl and/or --consolidate (or --schedule)".into(),
+        ));
+    }
+
+    if ttl {
+        let report = crate::memory::run_ttl_reaper(&store, cfg).await?;
+        println!(
+            "TTL reaper: {} soft-deprecated, {} hard-purged",
+            report.soft_deprecated, report.hard_purged
+        );
+    }
+
+    if consolidate {
+        let report = crate::memory::run_consolidation_job(&store, &llm, cfg).await?;
+        println!(
+            "Consolidation: {} summaries, {} dedup merges, {} orphans deleted",
+            report.summaries_generated, report.dedup_clusters_merged, report.orphans_deleted
+        );
+    }
+
+    Ok(())
+}
+
+/// What the scheduler should enqueue at one tick, derived from the clock
+/// and config. Pure (no I/O) so it is unit-testable without a database.
+///
+/// `now` is minutes since the Unix epoch; the caller converts wall-clock to
+/// that form. Returns the action strings to enqueue, in declared order.
+/// Day-of-week of the Unix epoch (1970-01-01) in the 0=Sunday convention:
+/// Thursday = 4. `now_minutes` is minutes since that epoch, so the weekday
+/// is `(4 + now_minutes / 1440) % 7`.
+const EPOCH_WEEKDAY: u32 = 4;
+
+pub fn scheduler_tick(now_minutes: u64, cfg: &Config) -> Vec<&'static str> {
+    let hour = (now_minutes / 60) as u32 % 24;
+    let minute = (now_minutes % 60) as u32;
+    let mut out = Vec::new();
+
+    if cfg.memory.reaper_hour() != u32::MAX && hour == cfg.memory.reaper_hour() && minute == 0 {
+        out.push("ttl");
+    }
+    if cfg.consolidate.enabled {
+        let day = (EPOCH_WEEKDAY + (now_minutes / (24 * 60)) as u32) % 7;
+        if day == cfg.consolidate.day && hour == cfg.consolidate.hour && minute == 0 {
+            out.push("consolidate");
+        }
+    }
+    out
+}
+
+/// Foreground scheduler: enqueues `maintain` jobs at the configured hours.
+///
+/// Honors `[memory] reaper_hour` (TTL reaper) and `[consolidate]`
+/// (`enabled`/`day`/`hour` for the consolidation pass) so the config knobs are
+/// no longer dead (0055). Runs until the process is signalled.
+async fn run_scheduler(store: &crate::storage::StoreHandle, cfg: &Config) -> Result<()> {
+    use crate::memory::jobs;
+    use crate::util::clock::Clock;
+
+    eprintln!(
+        "scheduler: reaper_hour={}, consolidate.enabled={}, consolidate.hour={}",
+        cfg.memory.reaper_hour(),
+        cfg.consolidate.enabled,
+        cfg.consolidate.hour
+    );
+
+    let tick = std::time::Duration::from_secs(60);
+    let clock = crate::util::SystemClock;
+    loop {
+        let now = clock.now_millis();
+        let now_minutes = (now / 60_000) as u64;
+
+        // `enqueue` is idempotent on the idempotency key (`scheduler:ttl`,
+        // `scheduler:consolidate`), so re-ticking the same minute is a no-op.
+        for action in scheduler_tick(now_minutes, cfg) {
+            let payload = serde_json::json!({"action": action}).to_string();
+            let id_key = format!("scheduler:{action}");
+            if let Err(e) = jobs::enqueue(store, "maintain", &payload, Some(&id_key)).await {
+                eprintln!("scheduler: enqueue {action} failed: {e}");
+            }
+        }
+
+        tokio::time::sleep(tick).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `now_minutes` is minutes since the Unix epoch; the caller converts
+    /// wall-clock to that form. The epoch is a Thursday, so day 0 = Thursday
+    /// (day 4 of the 0=Sunday week).
+    const EPOCH_MINUTES: u64 = 0; // 1970-01-01 00:00 UTC = Thursday 00:00
+
+    fn cfg(reaper_hour: u32, cons_enabled: bool, cons_day: u32, cons_hour: u32) -> Config {
+        Config {
+            memory: crate::config::MemoryConfig {
+                reaper_hour,
+                ..Default::default()
+            },
+            consolidate: crate::config::ConsolidateConfig {
+                enabled: cons_enabled,
+                day: cons_day,
+                hour: cons_hour,
+            },
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn scheduler_tick_silent_off_hour() {
+        // 02:30 — neither the reaper (03:00) nor consolidation (Sun 04:00).
+        let c = cfg(3, true, 0, 4);
+        let tick = EPOCH_MINUTES + 2 * 60 + 30;
+        assert!(
+            scheduler_tick(tick, &c).is_empty(),
+            "off-hour must enqueue nothing"
+        );
+    }
+
+    #[test]
+    fn scheduler_tick_fires_reaper_at_the_hour() {
+        let c = cfg(3, true, 0, 4);
+        let tick = EPOCH_MINUTES + 3 * 60; // 03:00
+        assert_eq!(scheduler_tick(tick, &c), vec!["ttl"]);
+    }
+
+    #[test]
+    fn scheduler_tick_fires_consolidation_at_its_hour() {
+        // Epoch is Thursday; day 0 (Sunday) is 3 days later.
+        let c = cfg(3, true, 0, 4);
+        let tick = EPOCH_MINUTES + (3 * 24 + 4) * 60; // Sunday 04:00
+        assert_eq!(scheduler_tick(tick, &c), vec!["consolidate"]);
+    }
+
+    #[test]
+    fn scheduler_tick_fires_both_when_hours_coincide() {
+        let c = cfg(4, true, 0, 4);
+        let tick = EPOCH_MINUTES + (3 * 24 + 4) * 60; // Sunday 04:00
+        assert_eq!(scheduler_tick(tick, &c), vec!["ttl", "consolidate"]);
+    }
+
+    #[test]
+    fn scheduler_tick_skips_consolidation_when_disabled() {
+        let c = cfg(4, false, 0, 4);
+        let tick = EPOCH_MINUTES + (3 * 24 + 4) * 60;
+        assert_eq!(scheduler_tick(tick, &c), vec!["ttl"]);
+    }
+
+    #[test]
+    fn scheduler_tick_skips_reaper_when_hour_is_max() {
+        // `u32::MAX` = disabled (the default when the knob is absent).
+        let mut c = Config::default();
+        c.memory.reaper_hour = u32::MAX;
+        let tick = EPOCH_MINUTES + 4 * 60;
+        assert!(scheduler_tick(tick, &c).is_empty());
+    }
+
+    #[test]
+    fn scheduler_tick_requires_minute_zero() {
+        // Same hour, minute 30 — must not fire.
+        let c = cfg(3, false, 0, 0);
+        let tick = EPOCH_MINUTES + 3 * 60 + 30;
+        assert!(scheduler_tick(tick, &c).is_empty());
+    }
+}

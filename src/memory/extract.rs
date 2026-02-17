@@ -124,11 +124,11 @@ pub struct ExtractReport {
 ///
 /// Turns already consumed (recorded in `meta` as `extracted_upto_<session>`)
 /// are skipped. Each new memory is tagged with [`EXTRACTOR_VERSION`].
-pub async fn extract_session<E: crate::embed::Embedder>(
+pub async fn extract_session(
     store: &crate::storage::StoreHandle,
     session_id: i64,
     chat: &dyn crate::llm::ChatClient,
-    embedder: &E,
+    embedder: &dyn crate::embed::Embedder,
     ledger: Option<crate::embed::LedgerSink>,
 ) -> Result<ExtractReport> {
     let turns = sessions::session_turns(store, session_id).await?;

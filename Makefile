@@ -7,7 +7,9 @@
 #   make check         # fmt + clippy + test (gate before every commit)
 #   make fmt           # cargo fmt --all
 #   make lint          # cargo clippy --all-targets -- -D warnings
-#   make test          # cargo test --all-targets
+#   make test          # cargo test --all-targets (benches run informational in debug)
+#   make test-fast     # cargo test --lib --tests (no benches/doc tests)
+#   make bench         # release perf gate: recall p95 < 150 ms (AGOS_BENCH_VECTORS=10000 for @10k)
 #   make build         # release build
 #   make gate-v0.1.0   # milestone gate: check + plan-guard
 #   make gate-v0.1.1   # v0.1.1 milestone gate: fmt check + clippy + tests + plan-guard
@@ -18,7 +20,7 @@
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-.PHONY: help check fmt lint test build gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 plan-guard ci smoke
+.PHONY: help check fmt lint test test-fast build bench bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 plan-guard ci smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -30,8 +32,11 @@ fmt: ## Format all code
 lint: ## Clippy with warnings as errors
 	cargo clippy --all-targets -- -D warnings
 
-test: ## Run all tests
+test: ## Run all tests (benches self-skip their perf assertion in debug; see `bench`)
 	cargo test --all-targets
+
+test-fast: ## Run lib + integration tests only (skips benches; fastest full-signal run)
+	cargo test --lib --tests
 
 check: fmt lint test ## Full local gate (fmt + clippy + tests)
 
@@ -78,17 +83,24 @@ gate-v0.2.0: ## v0.2.0 milestone gate (write path: fmt + clippy + tests + plan-g
 	cargo build --release
 	$(MAKE) smoke
 
-eval: ## Run offline eval gate (precision ≥0.90, recall ≥0.95, MRR ≥0.80, 0 leaks)
+eval: ## Offline eval gate — hermetic (hash embedder): precision ≥0.90, recall ≥0.95, MRR ≥0.80, 0 leaks
 	@set -euo pipefail; \
 	DIR=$$(mktemp -d); \
 	DB=$$DIR/eval.db; \
-	cp fixtures/eval_cases.jsonl $$DIR/; \
-	CFG="--config agos-memory.toml --db $$DB"; \
-	cargo run --quiet -- $$CFG eval --file $$DIR/eval_cases.jsonl --min-precision 0.90 --min-recall 0.95 --min-mrr 0.80 --json 2>&1 | tail -20; \
+	printf "db_path = '%s'\nagent_id = 'eval'\n\n[embed]\nprovider = 'hash'\n" "$$DB" > $$DIR/agos-memory.toml; \
+	cargo run --quiet -- --config $$DIR/agos-memory.toml --db $$DB eval \
+		--file fixtures/eval_cases.jsonl \
+		--min-precision 0.90 --min-recall 0.95 --min-mrr 0.80 --json; \
 	rm -rf $$DIR
 
-bench: ## Run recall performance benchmark (p95 < 150ms)
+eval-summarize: ## Offline summarize-quality gate — mean ROUGE-L ≥ 0.85 over fixtures/summarize_cases.jsonl (hermetic: MockChat)
+	cargo test --test summarize_quality -- --nocapture
+
+bench: ## Release perf gate: recall p95 < 150 ms (@10k: AGOS_BENCH_VECTORS=10000)
 	cargo bench --bench recall_bench
+
+bench-consolidate: ## Release consolidation bench (0049): summarize quality/speed, dedup, TTL reaper
+	cargo bench --bench consolidate_bench
 
 gate-v0.3.0: ## v0.3.0 milestone gate (fmt + clippy -D + tests + plan-guard + build + smoke + eval + bench)
 	cargo fmt --all -- --check
@@ -99,5 +111,16 @@ gate-v0.3.0: ## v0.3.0 milestone gate (fmt + clippy -D + tests + plan-guard + bu
 	$(MAKE) smoke
 	$(MAKE) eval
 	$(MAKE) bench
+
+gate-v0.4.0: ## v0.4.0 milestone gate (fmt + clippy -D + tests + plan-guard + release + smoke + eval + eval-summarize)
+	cargo fmt --all -- --check
+	cargo clippy --all-targets -- -D warnings
+	cargo test --all-targets
+	$(MAKE) plan-guard
+	cargo build --release
+	$(MAKE) smoke
+	$(MAKE) eval
+	$(MAKE) eval-summarize
+	@echo "gate-v0.4.0: perf benches are separate release gates — run \`make bench\` and \`make bench-consolidate\`"
 
 ci: plan-guard check ## CI pipeline (offline; no provider access needed)
