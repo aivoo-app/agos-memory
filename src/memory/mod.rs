@@ -23,9 +23,33 @@ pub use persist::{
     DEDUP_THRESHOLD, PersistReport, persist_candidate, persist_candidate_full,
     persist_candidate_unembedded,
 };
+
+/// Refuse further extraction once the per-session token ceiling is spent
+/// (degraded: the turns themselves are still logged). Shared by the CLI write
+/// path and the MCP `remember` tool — the ceiling is a product rule, not a
+/// CLI rule.
+pub async fn check_session_budget(
+    store: &crate::storage::StoreHandle,
+    config: &crate::config::Config,
+) -> crate::error::Result<()> {
+    use crate::error::Error;
+    let ceiling = config.budget.max_tokens_per_session;
+    if ceiling == 0 {
+        return Ok(());
+    }
+    let used = store
+        .read(|conn| crate::observe::ledger::tokens_since(conn, 0))
+        .await?;
+    if used > ceiling {
+        return Err(Error::BudgetExceeded { used, ceiling });
+    }
+    Ok(())
+}
 pub use redact::{REDACTED, redact};
 pub use sessions::{SessionRow, TurnRow};
-pub use summarize::{SummarizeReport, run_summarization_job, summarize_by_id, summarize_tier};
+pub use summarize::{
+    SummarizeReport, run_summarization_job, summarize_all, summarize_by_id, summarize_tier,
+};
 pub use ttl_reaper::run_ttl_reaper;
 
 /// Confidence below this → `status='pending'` instead of `active` (D-pending).
@@ -42,7 +66,7 @@ pub const PENDING_THRESHOLD_DEFAULT: f64 = 0.4;
 /// job can fill the vector later). Only a *redaction-independent* storage
 /// failure aborts the write. Provider outages must never lose a fact.
 #[allow(clippy::too_many_arguments)]
-pub async fn remember<E: crate::embed::Embedder>(
+pub async fn remember<E: crate::embed::Embedder + ?Sized>(
     store: &crate::storage::StoreHandle,
     tier: &str,
     kind: &str,

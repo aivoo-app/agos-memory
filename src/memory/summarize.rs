@@ -206,6 +206,20 @@ fn count_tokens(text: &str) -> i64 {
     TokenCounter::count(&counter, text) as i64
 }
 
+/// Summarize all memories across every tier (on-demand, via MCP `summarize --all`).
+pub async fn summarize_all(
+    store: &StoreHandle,
+    llm: &Arc<dyn ChatClient>,
+    config: &Config,
+) -> Result<Vec<SummarizeReport>> {
+    let mut all = Vec::new();
+    for tier in ["working", "episodic", "semantic", "procedural"] {
+        let reports = summarize_tier(store, llm, config, tier).await?;
+        all.extend(reports);
+    }
+    Ok(all)
+}
+
 /// Periodic summarization job (run by worker).
 pub async fn run_summarization_job(
     store: &StoreHandle,

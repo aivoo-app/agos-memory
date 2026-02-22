@@ -292,12 +292,15 @@ async fn render_report_no_hit_line() -> Result<()> {
         ..Default::default()
     };
 
-    let out = render_report(&report, &HashMap::new(), 0.35);
+    let out = render_report(&report, &HashMap::new(), "test query", 0.35);
     assert!(
-        out.contains("No useful memories for \""),
+        out.contains("No useful memories for \"test query\""),
         "no-hit line must be rendered"
     );
-    assert!(out.contains("\""), "no-hit line must quote the query");
+    assert!(
+        out.contains("test query"),
+        "no-hit line must include the query text"
+    );
     Ok(())
 }
 
@@ -305,7 +308,7 @@ async fn render_report_no_hit_line() -> Result<()> {
 async fn explain_survives_empty_recall() -> Result<()> {
     // An empty recall must not panic when we later render its report.
     let report = RecallReport::default();
-    let out = render_report(&report, &HashMap::new(), 0.0);
+    let out = render_report(&report, &HashMap::new(), "test query", 0.0);
     assert!(!out.is_empty() || report.hits.is_empty());
     Ok(())
 }
