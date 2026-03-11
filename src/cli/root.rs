@@ -127,6 +127,22 @@ pub enum Command {
         #[command(subcommand)]
         cmd: ForgetCmd,
     },
+    /// Run the MCP server over stdio (default: streamable HTTP) until shutdown.
+    ///
+    /// One process per database: the server holds the single-writer flock for
+    /// its lifetime, so concurrent CLI runs fail with `DbLocked` (exit 4).
+    Serve {
+        /// Serve newline-delimited JSON-RPC on stdin/stdout instead of HTTP.
+        #[arg(long)]
+        stdio: bool,
+        /// HTTP bind address (overrides `[server] bind`).
+        #[arg(long)]
+        bind: Option<String>,
+        /// Bearer token (overrides `[server] token`; required for
+        /// non-loopback binds, at least 16 characters).
+        #[arg(long)]
+        token: Option<String>,
+    },
     /// Summarize memories (on-demand).
     Summarize {
         /// Summarize a single memory by public id.
@@ -301,6 +317,9 @@ pub async fn run(cli: Cli) -> Result<()> {
             consolidate,
             schedule,
         } => maintain_cmd(&cfg, ttl, consolidate, schedule).await,
+        Command::Serve { stdio, bind, token } => {
+            super::serve::run_serve(&cfg, stdio, bind, token).await
+        }
     }
 }
 
@@ -490,7 +509,8 @@ async fn recall_cmd(
         }
     }
 
-    let output = crate::recall::render_report(&report, &texts, recall_cfg.min_score as f64);
+    let output =
+        crate::recall::render_report(&report, &texts, &query.text, recall_cfg.min_score as f64);
     println!("{}", output);
 
     if explain {

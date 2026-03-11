@@ -4,5 +4,6 @@ pub mod backup;
 pub mod init;
 pub mod remember;
 pub mod root;
+pub mod serve;
 
 pub use root::{Cli, run, scheduler_tick};
