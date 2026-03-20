@@ -4,6 +4,37 @@ All notable changes to agos-memory are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/); versioning
 follows [SemVer](https://semver.org/).
 
+## [0.5.0] — 2026-09-22
+
+MCP server runtime: stdio + streamable HTTP, CLI `serve`, hermetic e2e.
+
+### Breaking
+- `recall::render_report` now takes the query text (`report, texts, query,
+  min_score`) so the no-hit line quotes the actual query.
+
+### Added
+- **MCP tool surface** (`agos_memory::mcp`): six tools — `remember`, `recall`,
+  `forget`, `summarize`, `explain`, `status` — exposed via rmcp's
+  `#[tool_router]` macro. Structured content (JSON) + fenced text content on
+  every tool response.
+- **Server transports** (`agos_memory::server`):
+  - `stdio.rs`: `serve --stdio` speaks newline-delimited JSON-RPC over
+    stdin/stdout via `rmcp::transport::io::stdio()`.
+  - `http.rs`: `serve --http` speaks the streamable-HTTP MCP protocol
+    (SEP-2567) over an axum router with bearer-token auth (fail-closed:
+    non-loopback origin without a token → 401).
+  - `auth.rs`: shared auth middleware used by the HTTP transport.
+- **CLI `serve` command**: `serve --stdio` (default: HTTP), `--bind`,
+  `--token`. Validates the bind/token before binding (fail-closed).
+- **E2E tests**: `tests/mcp_stdio.rs` (hermetic `provider = "none"`,
+  handshake + remember→recall over stdin/stdout) and `tests/mcp_http.rs`
+  (401 without token, 200 with, remember→recall over the wire).
+- **Dependencies**: `axum 0.8`, `tower 0.5`, `tokio-util 0.7` (rt),
+  `reqwest 0.12` (json + rustls-tls + blocking).
+
+### Fixed
+- Tracing logs go to stderr, so `serve --stdio` stdout carries JSON-RPC only.
+
 ## [0.4.0] — 2026-09-22
 
 Consolidation & forgetting: summaries, versioning, verified deletion, TTL retention.
