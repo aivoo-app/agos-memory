@@ -5,8 +5,10 @@
 //! HTTP speaks the streamable-HTTP MCP protocol over an axum router with
 //! bearer-token auth (fail-closed: unknown origin or missing token → 401).
 
+pub mod api;
 pub mod auth;
 pub mod http;
+pub mod json;
 pub mod stdio;
 
 /// Errors that can occur while running an MCP server (either transport).

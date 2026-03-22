@@ -62,6 +62,19 @@ impl AgosServer {
             chat,
         }
     }
+
+    /// Borrow the shared memory API. The JSON routes (issue 0002) delegate
+    /// here so the MCP and HTTP transports share one business-rules layer.
+    /// Clones are cheap — `StoreHandle` is an `Arc` and the providers are
+    /// boxed behind one `Arc` each.
+    pub(crate) fn memory_api(&self) -> crate::api::MemoryApi {
+        crate::api::MemoryApi::new(
+            self.store.clone(),
+            self.cfg.as_ref().clone(),
+            self.embedder.clone(),
+            self.chat.clone(),
+        )
+    }
 }
 
 /// MCP server identity: tools capability + this crate's name/version (not

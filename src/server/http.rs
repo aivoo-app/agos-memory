@@ -7,6 +7,8 @@
 use std::sync::Arc;
 
 use axum::Router;
+use axum::{Json, http::StatusCode, routing::get};
+use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -49,32 +51,13 @@ impl HttpServer {
             })?;
 
         let addr = listener.local_addr().map_err(ServerError::Listen)?;
-        tracing::info!("MCP HTTP server listening on {addr}");
+        tracing::info!("HTTP server listening on {addr} (MCP + JSON API)");
 
-        // Build the session manager (in-memory, no external store).
-        let session_manager = Arc::new(LocalSessionManager::default());
-
-        // Configure the streamable HTTP server.
-        let config = StreamableHttpServerConfig::default();
-
-        // Build the service: a factory that clones the handler per request.
-        let handler = self.handler;
-        let service_factory = {
-            let handler = handler.clone();
-            move || -> Result<AgosServer, std::io::Error> { Ok(handler.clone()) }
-        };
-
-        let service: StreamableHttpService<AgosServer, LocalSessionManager> =
-            StreamableHttpService::new(service_factory, session_manager, config);
-
-        // Wrap in an axum router at /mcp with the auth middleware.
-        let token = self.token.clone();
-        let bind = self.bind.clone();
-        let app = crate::server::auth::auth_middleware(
-            Router::new().nest_service("/mcp", service),
-            token,
-            bind,
-        );
+        // Build the full router: public `/healthz` plus bearer-protected
+        // `/mcp` and `/api/v1` on one app (single bind, single auth layer, single
+        // shutdown path — D38).
+        let api = self.handler.memory_api();
+        let app = Self::router(self.handler.clone(), api, &self.token, &self.bind);
 
         // Spawn the axum serve loop; it exits when `shutdown` is cancelled.
         let shutdown_clone = shutdown.clone();
@@ -93,4 +76,46 @@ impl HttpServer {
         })??;
         Ok(())
     }
+
+    /// Build the complete axum router for one `HttpServer` bind.
+    ///
+    /// `/healthz` is mounted *outside* the auth middleware (liveness must work
+    /// without a token, even on non-loopback binds). `/mcp` (the streamable
+    /// HTTP MCP service) and `/api/v1` (the JSON memory API) are nested behind
+    /// the bearer middleware and share the [`MemoryApi`] via `Extension`.
+    pub fn router(
+        handler: crate::mcp::AgosServer,
+        api: crate::api::MemoryApi,
+        token: &str,
+        bind: &str,
+    ) -> Router {
+        // MCP: session manager (in-memory) + streamable-HTTP service.
+        let session_manager = Arc::new(LocalSessionManager::default());
+        let config = StreamableHttpServerConfig::default();
+        let mcp: StreamableHttpService<AgosServer, LocalSessionManager> =
+            StreamableHttpService::new(
+                move || -> Result<AgosServer, std::io::Error> { Ok(handler.clone()) },
+                session_manager,
+                config,
+            );
+
+        // Protected surface: MCP tunnel + JSON routes + shared API state.
+        let protected = Router::new()
+            .nest_service("/mcp", mcp)
+            .nest("/api/v1", crate::server::json::routes())
+            .layer(axum::extract::Extension(api));
+
+        let protected =
+            crate::server::auth::auth_middleware(protected, token.to_string(), bind.to_string());
+
+        // `/healthz` is public; everything else is under `/`.
+        Router::new()
+            .route("/healthz", get(healthz))
+            .nest("/", protected)
+    }
+}
+
+/// Public liveness probe — no auth, no state, always 200.
+async fn healthz() -> (StatusCode, Json<serde_json::Value>) {
+    (StatusCode::OK, Json(json!({ "status": "ok" })))
 }

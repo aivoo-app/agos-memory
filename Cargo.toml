@@ -41,7 +41,7 @@ sqlite-vec-src = { path = "crates/sqlite-vec-src" }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync", "signal"] }
 axum = "0.8"
-tower = "0.5"
+tower = { version = "0.5", features = ["util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 toml = "0.9"
 async-trait = "0.1"
