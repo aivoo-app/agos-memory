@@ -37,6 +37,7 @@ fn error_code(e: &Error) -> &'static str {
     match e {
         Error::Config(_) => "CONFIG",
         Error::InvalidInput(_) => "INVALID_INPUT",
+        Error::MemoryNotFound { .. } => "NOT_FOUND",
         Error::SchemaTooNew { .. } => "SCHEMA_TOO_NEW",
         Error::DbLocked { .. } => "DB_LOCKED",
         Error::Storage(_) => "STORAGE",
@@ -52,6 +53,7 @@ fn error_code(e: &Error) -> &'static str {
 pub fn status_for(e: &Error) -> StatusCode {
     match e {
         Error::Config(_) | Error::InvalidInput(_) => StatusCode::BAD_REQUEST,
+        Error::MemoryNotFound { .. } => StatusCode::NOT_FOUND,
         Error::SchemaTooNew { .. } => StatusCode::SERVICE_UNAVAILABLE,
         Error::DbLocked { .. } => StatusCode::SERVICE_UNAVAILABLE,
         Error::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,

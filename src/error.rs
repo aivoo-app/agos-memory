@@ -85,6 +85,13 @@ pub enum Error {
     /// Input failed validation.
     #[error("invalid input: {0}")]
     InvalidInput(String),
+
+    /// A named memory was not found in the store.
+    #[error("memory {id} not found")]
+    MemoryNotFound {
+        /// Public id that was looked up.
+        id: String,
+    },
 }
 
 impl From<rusqlite::Error> for Error {

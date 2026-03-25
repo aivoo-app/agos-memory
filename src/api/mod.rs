@@ -414,7 +414,9 @@ impl MemoryApi {
             .store
             .get_memory(args.id.clone())
             .await?
-            .ok_or_else(|| Error::InvalidInput(format!("memory {} not found", args.id)))?;
+            .ok_or_else(|| Error::MemoryNotFound {
+                id: args.id.clone(),
+            })?;
         match action {
             "soft" => {
                 self.store
@@ -486,7 +488,7 @@ impl MemoryApi {
                 .store
                 .get_memory(id.to_string())
                 .await?
-                .ok_or_else(|| Error::InvalidInput(format!("memory {id} not found")))?;
+                .ok_or_else(|| Error::MemoryNotFound { id: id.to_string() })?;
             let report = crate::memory::summarize_by_id(
                 &self.store,
                 chat,
@@ -566,15 +568,29 @@ impl MemoryApi {
     /// Database health: schema version, per-status counts, index cache stats.
     pub async fn status(&self) -> Result<StatusOutcome> {
         let schema = self.store.schema_version().await?;
-        let counts: Vec<(String, i64)> = self.store.memory_counts().await?;
+        let raw: Vec<(String, i64)> = self.store.memory_counts().await?;
+        let count_map: std::collections::HashMap<String, i64> = raw.into_iter().collect();
+        // Always emit the three standard status buckets so operators and
+        // dashboards see a stable schema even on a freshly-initialized store.
+        let mut counts = Vec::new();
+        for bucket in &["active", "deprecated", "hard-deleted"] {
+            let count = count_map.get(*bucket).copied().unwrap_or(0);
+            counts.push(StatusCount {
+                status: bucket.to_string(),
+                count,
+            });
+        }
+        // Preserve any extra buckets the store may report (forward-compat).
+        for (status, count) in count_map {
+            if !["active", "deprecated", "hard-deleted"].contains(&status.as_str()) {
+                counts.push(StatusCount { status, count });
+            }
+        }
         let (hits, misses, entries) = self.store.embeddings_cache_stats().await?;
         Ok(StatusOutcome {
             schema_version: schema,
             agent_id: self.cfg.agent_id.clone(),
-            counts: counts
-                .into_iter()
-                .map(|(status, count)| StatusCount { status, count })
-                .collect(),
+            counts,
             embeddings_cache: EmbeddingsCacheStats {
                 entries,
                 hits,

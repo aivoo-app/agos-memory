@@ -111,7 +111,7 @@ impl HttpServer {
         // `/healthz` is public; everything else is under `/`.
         Router::new()
             .route("/healthz", get(healthz))
-            .nest("/", protected)
+            .merge(protected)
     }
 }
 

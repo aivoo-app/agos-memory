@@ -43,8 +43,8 @@ pub fn routes() -> Router {
         .route("/remember", post(remember))
         .route("/recall", post(recall))
         .route("/summarize", post(summarize))
-        .route("/forget/:id", post(forget))
-        .route("/explain/:id", get(explain))
+        .route("/forget/{id}", post(forget))
+        .route("/explain/{id}", get(explain))
         .route("/status", get(status))
 }
 
