@@ -162,17 +162,20 @@ fn parse_openapi_paths() -> Vec<(String, String)> {
             continue;
         }
 
-        if trim == base_indent + 4 && !stripped.is_empty() {
-            if let Some(ref path) = current_path {
-                // A method line: `    get:`
-                let method = stripped.trim_end_matches(':').trim().to_uppercase();
-                if matches!(
-                    method.as_str(),
-                    "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD"
-                ) {
-                    out.push((path.clone(), method));
-                }
-            }
+        // A method line at `    get:` depth.
+        if trim != base_indent + 4 || stripped.is_empty() {
+            continue;
+        }
+        let path = match &current_path {
+            Some(p) => p.clone(),
+            None => continue,
+        };
+        let method = stripped.trim_end_matches(':').trim().to_uppercase();
+        if matches!(
+            method.as_str(),
+            "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD"
+        ) {
+            out.push((path, method));
         }
     }
 
