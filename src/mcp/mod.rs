@@ -576,17 +576,20 @@ impl AgosServer {
             "schema: v{schema} agent: {}\nmemories:\n",
             self.cfg.agent_id
         );
-        for (tier, n) in &counts {
-            text.push_str(&format!("  {tier}: {n}\n"));
+        for (status, n) in &counts {
+            text.push_str(&format!("  {status}: {n}\n"));
         }
         text.push_str(&format!(
             "embeddings_cache: {entries} entries ({hits} hits, {misses} misses)"
         ));
+        // `memory_counts()` groups by **status** (active/deprecated/...), so the
+        // field is named `status` — the same key the JSON route returns
+        // (`StatusOutcome`); `tier` here was the 0001 mislabel fixed in 0002.
         let structured = serde_json::json!({
             "schema_version": schema,
             "agent_id": self.cfg.agent_id,
-            "counts": counts.iter().map(|(t, n)| serde_json::json!({
-                "tier": t, "count": n,
+            "counts": counts.iter().map(|(status, n)| serde_json::json!({
+                "status": status, "count": n,
             })).collect::<Vec<_>>(),
             "embeddings_cache": {"entries": entries, "hits": hits, "misses": misses},
         });
@@ -967,7 +970,19 @@ mod tests {
         assert_eq!(structured(&resp)["public_id"].as_str().unwrap(), pid);
 
         let resp = call(&server, "status", serde_json::json!({})).await;
-        let schema = structured(&resp)["schema_version"].as_i64().unwrap();
+        let body = structured(&resp);
+        let schema = body["schema_version"].as_i64().unwrap();
         assert!(schema >= 4, "schema {schema} must carry the v4 ledgers");
+        // `counts` rows are grouped by memory **status**; the key must match the
+        // JSON route's `StatusOutcome.counts[].status` (0002 fixed the mislabel).
+        let counts = body["counts"].as_array().unwrap();
+        assert!(
+            !counts.is_empty(),
+            "status must report count buckets: {resp:?}"
+        );
+        for bucket in counts {
+            assert!(bucket["status"].is_string(), "bucket: {bucket:?}");
+            assert!(bucket.get("tier").is_none(), "stale `tier` key: {bucket:?}");
+        }
     }
 }
