@@ -29,16 +29,39 @@ fn binary() -> Command {
     Command::new(env!("CARGO_BIN_EXE_agos-memory"))
 }
 
+/// A spawned `serve` child that kills and reaps itself when it leaves scope
+/// (only if it is still running), so a passing test can't orphan a server.
+struct Server(std::process::Child);
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        if matches!(self.0.try_wait(), Ok(None)) {
+            let _ = self.0.kill();
+        }
+        let _ = self.0.wait();
+    }
+}
+
+impl std::ops::Deref for Server {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Server {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 /// Spawn `serve` (default HTTP) with a hermetic config in `dir`, bound to
 /// `127.0.0.1:0` (ephemeral port), optionally with a bearer token.
 ///
-/// Returns the child, the base URL, and a receiver that streams stderr lines.
+/// Returns the [`Server`] guard, the base URL, and a receiver that streams stderr lines.
 /// The receiver MUST be kept alive for the child's whole lifetime to avoid
 /// SIGPIPE on the server's next log line (see `tests/mcp_http.rs` for the rationale).
-fn spawn(
-    dir: &std::path::Path,
-    token: Option<&str>,
-) -> (std::process::Child, String, mpsc::Receiver<String>) {
+fn spawn(dir: &std::path::Path, token: Option<&str>) -> (Server, String, mpsc::Receiver<String>) {
     let cfg = dir.join("http_api.toml");
     let mut cfg_str =
         String::from("[embed]\nprovider = \"hash\"\n\n[server]\nbind = \"127.0.0.1:0\"\n");
@@ -84,10 +107,6 @@ fn spawn(
                     let addr = after.split('(').next().unwrap().trim();
                     break addr.to_string();
                 }
-                if line.contains("HTTP server listening on ") {
-                    let after = line.split("HTTP server listening on ").nth(1).unwrap();
-                    break after.trim().to_string();
-                }
                 continue;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -103,7 +122,7 @@ fn spawn(
     };
 
     let url = format!("http://{addr}");
-    (child, url, lines_rx)
+    (Server(child), url, lines_rx)
 }
 
 // ---------------------------------------------------------------------------

@@ -25,8 +25,34 @@ fn binary() -> Command {
     Command::new(env!("CARGO_BIN_EXE_agos-memory"))
 }
 
+/// A spawned `serve` child that kills and reaps itself when it leaves scope
+/// (only if it is still running), so a panicking test can't orphan a server.
+struct Server(std::process::Child);
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        if matches!(self.0.try_wait(), Ok(None)) {
+            let _ = self.0.kill();
+        }
+        let _ = self.0.wait();
+    }
+}
+
+impl std::ops::Deref for Server {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Server {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 /// Spawn `serve` (HTTP) with a hermetic config in `dir`, bound to
-/// `127.0.0.1:0` (ephemeral port). Returns the child and the MCP endpoint URL.
+/// `127.0.0.1:0` (ephemeral port). Returns the [`Server`] guard and the MCP endpoint URL.
 ///
 /// The child's stderr is drained by a background thread for the child's whole
 /// lifetime: dropping the read end would SIGPIPE the server on its next log
@@ -36,7 +62,7 @@ fn binary() -> Command {
 fn spawn_http(
     dir: &std::path::Path,
     token: Option<&str>,
-) -> (std::process::Child, String, mpsc::Receiver<String>) {
+) -> (Server, String, mpsc::Receiver<String>) {
     let cfg = dir.join("mcp_http.toml");
     let mut cfg_str =
         String::from("[embed]\nprovider = \"none\"\n\n[server]\nbind = \"127.0.0.1:0\"\n");
@@ -94,6 +120,8 @@ fn spawn_http(
         if let Some(addr) = line
             .split("listening on ")
             .nth(1)
+            // Strip any trailing annotation like " (MCP + JSON API)".
+            .and_then(|rest| rest.split('(').next())
             .map(str::trim)
             .filter(|a| !a.is_empty())
         {
@@ -101,7 +129,7 @@ fn spawn_http(
         }
     };
 
-    (child, format!("http://{addr}/mcp"), lines_rx)
+    (Server(child), format!("http://{addr}/mcp"), lines_rx)
 }
 
 /// One client session against the running server.
