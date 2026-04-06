@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "agos-memory": {
+      "command": "/absolute/path/to/agos-memory",
+      "args": [
+        "serve",
+        "--stdio",
+        "--config",
+        "/absolute/path/to/agos-memory.toml"
+      ],
+      "env": {
+        "AGOS_MEMORY_LOG": "info"
+      }
+    }
+  }
+}
