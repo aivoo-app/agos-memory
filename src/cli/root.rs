@@ -47,6 +47,23 @@ pub enum Command {
         #[arg(long)]
         out: std::path::PathBuf,
     },
+    /// Export memories to JSONL (one header line, then one memory per line).
+    Export {
+        /// Only export this tier (default: every tier).
+        #[arg(long)]
+        tier: Option<String>,
+        /// Output file (default: stdout).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+    /// Import memories from a JSONL file produced by `export`.
+    Import {
+        /// JSONL file to import (`-` reads stdin).
+        file: std::path::PathBuf,
+        /// Validate and report counts without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Store one fact as a durable memory (redacted, embedded, deduped).
     Remember {
         /// The fact text.
@@ -262,6 +279,10 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Status => status(&cfg).await,
         Command::Doctor => doctor(&cfg).await,
         Command::Backup { out } => super::backup::run(&cfg, &out).await,
+        Command::Export { tier, out } => {
+            super::export::run_export(&cfg, tier.as_deref(), out.as_deref()).await
+        }
+        Command::Import { file, dry_run } => super::export::run_import(&cfg, &file, dry_run).await,
         Command::Remember {
             text,
             tier,
