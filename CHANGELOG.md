@@ -26,6 +26,13 @@ MCP server runtime: stdio + streamable HTTP, CLI `serve`, hermetic e2e.
   - `auth.rs`: shared auth middleware used by the HTTP transport.
 - **CLI `serve` command**: `serve --stdio` (default: HTTP), `--bind`,
   `--token`. Validates the bind/token before binding (fail-closed).
+- **CLI `export` / `import` commands**: portable, tombstone-aware JSONL
+  migration. `export [--tier X] [--out file]` streams only `active`/
+  `deprecated` rows of the store's agent (hard-purged ids never leave; piping
+  to stdout via `--out -`); `import [--dry-run] file` (or `-` for stdin) is
+  idempotent by `text_hash` (dupes bump `ref_count`), versioned on conflicting
+  `public_id` (never a silent overwrite), refuses tombstoned ids, and replays
+  trust/status/provenance byte-for-byte. Supports `export | import -`.
 - **E2E tests**: `tests/mcp_stdio.rs` (hermetic `provider = "none"`,
   handshake + remember→recall over stdin/stdout) and `tests/mcp_http.rs`
   (401 without token, 200 with, remember→recall over the wire).
