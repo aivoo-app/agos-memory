@@ -11,6 +11,8 @@
 #   make test-fast     # cargo test --lib --tests (no benches/doc tests)
 #   make bench         # release perf gate: recall p95 < 150 ms (AGOS_BENCH_VECTORS=10000 for @10k)
 #   make build         # release build
+#   make build-musl    # static release build for x86_64-unknown-linux-musl
+#                        (requires musl-gcc; see docs/operations/runbook.md)
 #   make gate-v0.1.0   # milestone gate: check + plan-guard
 #   make gate-v0.1.1   # v0.1.1 milestone gate: fmt check + clippy + tests + plan-guard
 #   make gate-v0.2.0   # v0.2.0 milestone gate: check + plan-guard + release build + CLI smoke
@@ -20,7 +22,7 @@
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-.PHONY: help check fmt lint test test-fast build bench bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 plan-guard ci smoke
+.PHONY: help check fmt lint test test-fast build build-musl bench bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 plan-guard ci smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -42,6 +44,19 @@ check: fmt lint test ## Full local gate (fmt + clippy + tests)
 
 build: ## Release build
 	cargo build --release
+
+# Static musl release build (0006). Two one-time prerequisites, both checked:
+#   1. `rustup target add x86_64-unknown-linux-musl`
+#   2. `musl-gcc` (musl-tools: apt 'musl-tools' / pacman 'musl'), which the
+#      vendored sqlite-vec + rusqlite C code link against. Without it, `cc-rs`
+#      aborts looking for `x86_64-linux-musl-gcc`. The `[profile.release]`
+#      (`lto`, `strip`) is reused as-is. Result must be statically linked.
+build-musl: ## Static release build for x86_64-unknown-linux-musl (0006)
+	@rustup target list --installed | grep -qx 'x86_64-unknown-linux-musl' || { echo "build-musl: 'rustup target add x86_64-unknown-linux-musl' first"; exit 1; }
+	@command -v x86_64-linux-musl-gcc >/dev/null || command -v musl-gcc >/dev/null || { echo "build-musl: musl-gcc not found — install musl-tools (apt: musl-tools, pacman: musl), see docs/operations/runbook.md"; exit 1; }
+	cargo build --release --target x86_64-unknown-linux-musl
+	@echo "musl binary: target/release/x86_64-unknown-linux-musl/agos-memory"
+	@if ldd target/release/x86_64-unknown-linux-musl/agos-memory 2>&1 | grep -q 'not a dynamic executable'; then echo "ldd: statically linked (OK)"; else echo "ldd: WARNING — not fully static"; exit 1; fi
 
 plan-guard: ## Fail if plan/ local notes are tracked by git
 	@if git ls-files plan/ | grep -v '^plan/.gitignore$$' | grep -q .; then echo "plan-guard: FAIL — plan/ files are tracked (keep plan/ git-ignored)"; git ls-files plan/ | grep -v '^plan/.gitignore$$'; exit 1; fi

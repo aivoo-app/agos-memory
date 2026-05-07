@@ -33,6 +33,10 @@ MCP server runtime: stdio + streamable HTTP, CLI `serve`, hermetic e2e.
   idempotent by `text_hash` (dupes bump `ref_count`), versioned on conflicting
   `public_id` (never a silent overwrite), refuses tombstoned ids, and replays
   trust/status/provenance byte-for-byte. Supports `export | import -`.
+- **Static musl build (`make build-musl`)**: builds
+  `x86_64-unknown-linux-musl` with a prerequisite guard (musl target +
+  `musl-gcc`) and an `ldd` static-link check; runbook "Static (musl) build"
+  documents the one-time setup.
 - **E2E tests**: `tests/mcp_stdio.rs` (hermetic `provider = "none"`,
   handshake + remember→recall over stdin/stdout) and `tests/mcp_http.rs`
   (401 without token, 200 with, remember→recall over the wire).

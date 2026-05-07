@@ -48,6 +48,33 @@ delete it while a process is running.
 
 `AGOS_MEMORY_LOG=debug agos-memory doctor` (same syntax as RUST_LOG).
 
+## Static (musl) build
+
+For minimal images (distroless/alpine in the Docker story) the default
+release binary is too big and dynamically linked against glibc. Build a
+statically linked `x86_64-unknown-linux-musl` binary with:
+
+```sh
+rustup target add x86_64-unknown-linux-musl   # one-time
+# install musl-gcc (musl-tools):
+#   Debian/Ubuntu: sudo apt-get install musl-tools
+#   Arch (Garuda): sudo pacman -S musl
+make build-musl
+```
+
+`build-musl` verifies both prerequisites first (clear error else), then:
+
+```sh
+cargo build --release --target x86_64-unknown-linux-musl
+```
+
+`[profile.release]` (`lto`, `strip`) is reused as-is, and the bundled
+rusqlite/sqlite-vec C code compiles with `musl-gcc` — nothing is vendored.
+The result is printed and `ldd` is checked to confirm "not a dynamic
+executable". Runtime behavior is identical to the gnu binary; a statically
+linked binary also crosses kernels without glibc (e.g. Alpine → the Docker
+image in `docs/architecture.md`).
+
 ## Retention & forgetting (v0.4.0)
 
 Full reference: `docs/forget.md`. Operator quick reference:
