@@ -73,7 +73,23 @@ rusqlite/sqlite-vec C code compiles with `musl-gcc` — nothing is vendored.
 The result is printed and `ldd` is checked to confirm "not a dynamic
 executable". Runtime behavior is identical to the gnu binary; a statically
 linked binary also crosses kernels without glibc (e.g. Alpine → the Docker
-image in `docs/architecture.md`).
+image below).
+
+## Docker (0007)
+
+```sh
+export AGOS_MEMORY_TOKEN="$(openssl rand -hex 24)"   # >=16 chars, required
+docker compose up --build        # builds the musl-static image (36 MB), serves on :8710
+curl -s localhost:8710/healthz                        # liveness (no token)
+curl -s -H "Authorization: Bearer $AGOS_MEMORY_TOKEN" localhost:8710/api/v1/status
+```
+
+The compose file binds off-loopback so the port is reachable; that is
+fail-closed (D29) and **requires** `AGOS_MEMORY_TOKEN`. Runtime is
+`alpine:3.20` (musl) running the statically-linked binary. Persistent store is
+the named `agos_memory_data` volume at `/data/memory.db`; to add an embed/LLM
+endpoint, uncomment the `AGOS_MEMORY_EMBED_*` / `AGOS_MEMORY_LLM_*` lines in
+`docker-compose.yml`.
 
 ## Retention & forgetting (v0.4.0)
 

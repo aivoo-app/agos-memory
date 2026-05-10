@@ -1,0 +1,45 @@
+# Local dev / self-hosting on Docker (0007).
+#
+# The runtime binds off-loopback (`0.0.0.0`) so the published port is actually
+# reachable from the host. A non-loopback bind is fail-closed and REQUIRES a
+# token (at least 16 chars): set AGOS_MEMORY_TOKEN before `docker compose up`,
+# e.g.:
+#   export AGOS_MEMORY_TOKEN="$(openssl rand -hex 24)"
+#   docker compose up --build
+#
+# To use real embeddings, uncomment the AGOS_MEMORY_EMBED_* lines and point
+# them at your OpenAI-compatible endpoint (e.g. AGOS_PROXY base URL).
+services:
+  agos-memory:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agos-memory:0.5.0
+    container_name: agos-memory
+    restart: unless-stopped
+    environment:
+      AGOS_MEMORY_BIND: "0.0.0.0:8710"
+      AGOS_MEMORY_DB_PATH: "/data/memory.db"
+      # Required: non-loopback bind refuses to start tokenless (D29 fail-closed).
+      AGOS_MEMORY_TOKEN: "${AGOS_MEMORY_TOKEN:?set AGOS_MEMORY_TOKEN (>=16 chars) before 'docker compose up'}"
+      # Optional real embeddings (default provider is openai_compat):
+      # AGOS_MEMORY_EMBED_BASE_URL: "http://agos-proxy:8080"
+      # AGOS_MEMORY_EMBED_MODEL: "text-embedding-3-small"
+      # AGOS_MEMORY_EMBED_API_KEY: "${AGOS_MEMORY_EMBED_API_KEY:-}"
+      # AGOS_MEMORY_LLM_BASE_URL: "http://agos-proxy:8080"
+      # AGOS_MEMORY_LLM_MODEL: "gpt-4o-mini"
+    ports:
+      - "8710:8710"
+    volumes:
+      - agos_memory_data:/data
+    healthcheck:
+      # /healthz is unauthenticated. Alpine ships BusyBox with a wget applet;
+      # `wget` exits non-zero on HTTP>=400 (e.g. a 500), so this is a real check.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8710/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  agos_memory_data:

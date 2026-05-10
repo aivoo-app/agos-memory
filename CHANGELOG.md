@@ -37,6 +37,15 @@ MCP server runtime: stdio + streamable HTTP, CLI `serve`, hermetic e2e.
   `x86_64-unknown-linux-musl` with a prerequisite guard (musl target +
   `musl-gcc`) and an `ldd` static-link check; runbook "Static (musl) build"
   documents the one-time setup.
+- **Docker (`Dockerfile` + `docker-compose.yml`)**: multi-stage image —
+  `rust:1.98-bookworm` builds the static musl binary, runtime `alpine:3.20`
+  runs it with zero add-ons. `ENTRYPOINT ["agos-memory","serve"]`, volume at
+  `/data`, `/healthz` healthcheck. Compose requires `AGOS_MEMORY_TOKEN`
+  (off-loopback bind is fail-closed), wiring it to `[server] token`. NB:
+  runtime is **alpine** rather than the originally-planned
+  distroless/static-debian12 — that base ships no shell/tools (not even an
+  executable BusyBox), so the in-container healthcheck would be impossible;
+  Alpine is musl-native and ~36 MB.
 - **E2E tests**: `tests/mcp_stdio.rs` (hermetic `provider = "none"`,
   handshake + remember→recall over stdin/stdout) and `tests/mcp_http.rs`
   (401 without token, 200 with, remember→recall over the wire).
