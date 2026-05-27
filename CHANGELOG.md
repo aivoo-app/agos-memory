@@ -51,9 +51,40 @@ MCP server runtime: stdio + streamable HTTP, CLI `serve`, hermetic e2e.
   (401 without token, 200 with, remember→recall over the wire).
 - **Dependencies**: `axum 0.8`, `tower 0.5`, `tokio-util 0.7` (rt),
   `reqwest 0.12` (json + rustls-tls + blocking).
+- **Milestone gate `make gate-v0.5.0`** (fmt + clippy `-D warnings` + tests +
+  plan-guard + release build + smoke + **smoke-serve** + eval +
+  eval-summarize) and the `smoke-serve` recipe: spawns `serve --stdio`, runs a
+  real `tools/call` roundtrip over stdin, then starts HTTP `serve` on an
+  ephemeral loopback port and asserts `/healthz` 200. Wired into CI.
+- **`docker` CI job + `make docker-build` / `make docker-smoke`** — the only
+  end-to-end verification of the musl build (0006) and the container (0007).
+- **`docs/adr/009-interfaces-transports-auth.md`** — D38 (one router/bind/auth
+  layer/shutdown across both surfaces), D39 (docs-only clients), the
+  hand-written-OpenAPI coverage decision, and the alpine runtime deviation.
+- **`docs/interfaces.md`** — the complete v0.5.0 interface reference
+  (transports, MCP tools, JSON routes, auth, error taxonomy), reviewed against
+  the implementation.
 
 ### Fixed
 - Tracing logs go to stderr, so `serve --stdio` stdout carries JSON-RPC only.
+- `make smoke-serve` wrote a *relative* `db_path` into its throwaway config, so
+  the smoke opened `<repo-root>/s.db` instead of a temporary database (and a
+  killed run could leave it locked). It now writes an absolute path, and guards
+  stdio/HTTP failures with the captured output instead of failing with a bare
+  `make: *** Error 4`; an `EXIT` trap always reaps the server and temp dir.
+- `docs/examples/__pycache__/*.pyc` was accidentally tracked; untracked, and
+  `__pycache__/` + `*.pyc` are now gitignored.
+- **`.github/workflows/ci.yml` was not valid YAML**, so GitHub Actions rejected
+  the whole workflow and *nothing* was being gated in CI. Two step names
+  contained an unquoted `: ` (`Offline eval gate (hermetic: deterministic hash
+  embedder)` and the summarize-quality gate), which YAML reads as a nested
+  mapping. Both reworded; the file now parses and the new `docker` job is live.
+- **Packaging had no automated proof.** Building the image is the only
+  end-to-end check of the musl static build (0006) and the container (0007), so
+  a push-only `docker` CI job now builds the image, starts it with the compose
+  bind/token shape, waits for `/healthz` to answer 200, and asserts the auth
+  matrix (401 without a token, 200 with). `make docker-build` / `make
+  docker-smoke` give local parity.
 
 ## [0.4.0] — 2026-09-22
 

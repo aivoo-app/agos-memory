@@ -91,6 +91,35 @@ the named `agos_memory_data` volume at `/data/memory.db`; to add an embed/LLM
 endpoint, uncomment the `AGOS_MEMORY_EMBED_*` / `AGOS_MEMORY_LLM_*` lines in
 `docker-compose.yml`.
 
+### Verifying the image
+
+Building the image is the only end-to-end proof of the musl static build: the
+builder stage runs the `x86_64-unknown-linux-musl` release compile, so a broken
+musl toolchain or a missing source directory fails the build rather than
+shipping a broken artifact. Two equivalent entry points:
+
+```sh
+make docker-smoke     # build + run the image, assert /healthz 200 and the auth matrix
+```
+
+```sh
+docker build -t agos-memory:local .
+CID=$(docker run -d -e AGOS_MEMORY_BIND=0.0.0.0:8710 \
+      -e AGOS_MEMORY_TOKEN=smoke-token-0123456789 \
+      -p 127.0.0.1:8710:8710 agos-memory:local)
+# probe, then confirm the auth matrix (401 without a token, 200 with):
+curl -s -o /dev/null -w '%{http_code}\n'        localhost:8710/healthz          # 200
+curl -s -o /dev/null -w '%{http_code}\n'        localhost:8710/api/v1/status    # 401
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer smoke-token-0123456789" \
+                                                localhost:8710/api/v1/status    # 200
+docker rm -f "$CID"
+```
+
+`make docker-smoke` is what CI runs (the `docker` job, push-only); the manual
+sequence is for debugging it. If `/healthz` never answers, `docker logs` is the
+first stop — a `DbLocked` message means the volume is still held by another
+container.
+
 ## Retention & forgetting (v0.4.0)
 
 Full reference: `docs/forget.md`. Operator quick reference:
