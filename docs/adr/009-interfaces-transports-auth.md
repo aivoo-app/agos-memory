@@ -22,10 +22,14 @@ this repo.
    and one shutdown path; every writing CLI command still refuses a live
    store with `DbLocked` (D18).
 
-2. **MCP is the tool surface; the library API stays the authority** — the six
-   MCP tools (`remember`, `recall`, `forget`, `summarize`, `explain`,
-   `status`) are thin wrappers over `agos_memory::mcp` → the storage API,
-   returning both structured content (JSON) and fenced text. rmcp 3.4 is the
+2. **MCP is the tool surface; one transport-neutral API is the authority** —
+   the six MCP tools (`remember`, `recall`, `forget`, `summarize`, `explain`,
+   `status`) are thin wrappers: each maps its typed input to
+   `src/api::MemoryApi` and formats the returned JSON as both structured
+   content and fenced text (`src/mcp/mod.rs`). The JSON routes call the *same*
+   `MemoryApi` (`src/server/json.rs`), so the business rules — budget guard,
+   `provider = 'none'` degradation, trust derivation — exist in exactly one
+   place instead of being reimplemented per transport. rmcp 3.4 is the
    transport/tooling layer (official Rust SDK, MSRV-compatible).
 
 3. **Bearer auth, fail-closed by bind (D29)** — a token is required to start a
