@@ -16,7 +16,7 @@
 #   make gate-v0.1.0   # milestone gate: check + plan-guard
 #   make gate-v0.1.1   # v0.1.1 milestone gate: fmt check + clippy + tests + plan-guard
 #   make gate-v0.2.0   # v0.2.0 milestone gate: check + plan-guard + release build + CLI smoke
-#   make gate-v0.5.0   # v0.5.0 Interfaces gate: check + plan-guard + release + smoke + smoke-serve + eval + eval-summarize
+#   make gate-v0.5.0   # v0.5.0 Interfaces gate: check + yaml-guard + plan-guard + release + smoke + smoke-serve + eval + eval-summarize
 #   make smoke-serve   # spawn serve: stdio tools/call roundtrip + HTTP /healthz
 #   make docker-build  # build the container image (also proves the musl build)
 #   make docker-smoke  # run the image: /healthz 200 + auth matrix (mirrors CI)
@@ -211,7 +211,7 @@ gate-v0.4.0: ## v0.4.0 milestone gate (fmt + clippy -D + tests + plan-guard + re
 	$(MAKE) eval-summarize
 	@echo "gate-v0.4.0: perf benches are separate release gates — run \`make bench\` and \`make bench-consolidate\`"
 
-gate-v0.5.0: ## v0.5.0 Interfaces gate: fmt + clippy -D + tests + plan-guard + release + smoke + smoke-serve + eval + eval-summarize
+gate-v0.5.0: ## v0.5.0 Interfaces gate: fmt + clippy -D + tests + yaml-guard + plan-guard + release + smoke + smoke-serve + eval + eval-summarize
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
