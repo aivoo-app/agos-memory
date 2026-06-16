@@ -247,10 +247,11 @@ pub async fn explain(
 pub fn render_report(
     report: &RecallReport,
     texts: &HashMap<String, String>,
+    query: &str,
     min_score: f64,
 ) -> String {
     if report.no_hit {
-        return render_no_hit("", min_score, report.hits.len());
+        return render_no_hit(query, min_score, report.hits.len());
     }
     let mut out = String::new();
     for hit in &report.hits {

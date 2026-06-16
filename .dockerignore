@@ -1,0 +1,20 @@
+# Keep the build context lean for the Docker image builder.
+target/
+.git/
+.gitignore
+plan/
+.clinerules
+.agent/
+.kilo/
+bench/
+tests/
+fixtures/
+docs/
+*.db
+*.db-wal
+*.db-shm
+*.db.lock
+*.log
+.vscode/
+memory.db
+# NB: do NOT match `*.lock` — `Cargo.lock` must ship for `--locked` builds.

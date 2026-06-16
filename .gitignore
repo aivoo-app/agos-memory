@@ -17,3 +17,7 @@ AGENT.md
 *.db-shm
 *.db.lock
 .fastembed_cache/
+
+# Python bytecode (docs/examples/*.py are run during verification)
+__pycache__/
+*.pyc

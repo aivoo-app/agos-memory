@@ -1,0 +1,605 @@
+openapi: "3.0.3"
+info:
+  title: agos-memory JSON API
+  description: |
+    Plain JSON HTTP interface to the agos-memory agent memory store.
+
+    Mirrors the MCP tool surface (issue 0001) field-for-field — the same
+    `*Input` shapes and outcome DTOs. Error bodies follow the CLI error
+    taxonomy as `{ "error": "...", "code": "..." }` with matching HTTP status.
+
+    Every route except `/healthz` requires a Bearer token when one is
+    configured for the server. Loopback binds without a token are allowed
+    for local development (same rule as the MCP transport).
+  version: "0.5.0"
+  contact:
+    name: AGOS Memory
+servers:
+  - url: http://127.0.0.1:{port}
+    description: ephemeral-port dev server
+    variables:
+      port:
+        description: TCP port the server is listening on
+        default: "0"
+
+tags:
+  - name: memory
+    description: remember / recall / forget / summarize / explain
+  - name: status
+    description: store health and counts
+  - name: liveness
+    description: unauthenticated probe
+
+security:
+  - BearerAuth: []
+
+paths:
+  /healthz:
+    get:
+      tags: [liveness]
+      summary: Liveness probe
+      description: |
+        Public, unauthenticated endpoint. Returns 200 while the server process
+        is alive. Does not depend on the store or the auth layer.
+      operationId: healthz
+      responses:
+        "200":
+          description: server is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Healthz"
+
+  /api/v1/remember:
+    post:
+      tags: [memory]
+      summary: Store a memory
+      description: |
+        Persist a fact or event into the memory store. Returns the created
+        memory's `public_id`, status, and trust label.
+      operationId: remember
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RememberInput"
+      responses:
+        "200":
+          description: memory stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RememberOutcome"
+        "400":
+          description: validation failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "500":
+          description: store/inference error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/v1/recall:
+    post:
+      tags: [memory]
+      summary: Retrieve memories by hybrid search
+      description: |
+        Hybrid FTS5 BM25 + vector KNN retrieval. Returns a ranked hit list with
+        citations. Pass `include_episodic: true` to opt into episodic-tier
+        results (D26).
+      operationId: recall
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecallInput"
+      responses:
+        "200":
+          description: ranked hits
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecallReport"
+        "400":
+          description: validation failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "500":
+          description: retrieval error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/v1/forget/{id}:
+    post:
+      tags: [memory]
+      summary: Deprecate, restore, purge, or rollback a memory
+      description: |
+        Soft-deprecate by default. `action` controls the verb: `soft`,
+        `restore`, `hard`, `rollback`. The memory id lives in the path.
+      operationId: forget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: public_id of the memory
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgetBody"
+      responses:
+        "200":
+          description: forget outcome
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgetOutcome"
+        "400":
+          description: validation failure / unknown action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "404":
+          description: memory not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "500":
+          description: store error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/v1/summarize:
+    post:
+      tags: [memory]
+      summary: Summarize a memory or the store
+      description: |
+        On-demand summarization. Pass `id` to summarize a single memory; omit
+        it to summarize the whole store. `all: true` forces reSummarization
+        even when a summary exists.
+      operationId: summarize
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SummarizeInput"
+      responses:
+        "200":
+          description: summary result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SummarizeResult"
+        "400":
+          description: validation failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "500":
+          description: inference/store error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/v1/explain/{id}:
+    get:
+      tags: [memory]
+      summary: Explain a memory's provenance
+      description: |
+        Returns an explain report for the given public_id. Returns 404 with a
+        `{error, code}` body when the memory does not exist.
+      operationId: explain
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: public_id of the memory
+          schema:
+            type: string
+      responses:
+        "200":
+          description: explain report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExplainOutcome"
+        "404":
+          description: memory not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "500":
+          description: error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/v1/status:
+    get:
+      tags: [status]
+      summary: Store health and counts
+      description: |
+        Returns aggregate counts grouped by status (active / deprecated /
+        hard-deleted) and tier. Requires auth when a token is configured.
+      operationId: status
+      responses:
+        "200":
+          description: status report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusReport"
+        "401":
+          description: missing or wrong bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "500":
+          description: store error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: string
+      description: |
+        Bearer token configured on the server. When absent the server
+        only accepts loopback connections without a token.
+
+  schemas:
+    Healthz:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: "ok"
+
+    RememberInput:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          description: The fact text to store.
+          minLength: 1
+        tier:
+          type: string
+          description: Memory tier (default episodic).
+          enum: [episodic, semantic, procedural]
+        kind:
+          type: string
+          description: Memory kind (default fact).
+        source_kind:
+          type: string
+          description: Provenance: user/agent/tool/file/web/import.
+          enum: [user, agent, tool, file, web, import]
+        confidence:
+          type: number
+          format: double
+          description: Extraction confidence 0..1 (below threshold → pending).
+          minimum: 0
+          maximum: 1
+
+    RememberOutcome:
+      type: object
+      required: [public_id, status, trust]
+      properties:
+        public_id:
+          type: string
+          description: Stable public identifier for the memory.
+        status:
+          type: string
+          description: Current status (active).
+          enum: [active]
+        trust:
+          type: string
+          description: Trust label assigned by provenance policy.
+          enum: [trusted, untrusted]
+
+    RecallInput:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          description: Query text to search for.
+        k:
+          type: integer
+          description: Maximum hits (default from config).
+          minimum: 1
+        budget_tokens:
+          type: integer
+          format: int64
+          description: Token budget override.
+        include_untrusted:
+          type: boolean
+          description: Include untrusted memories (fenced, never laundered — D29).
+        include_pending:
+          type: boolean
+          description: Include pending memories.
+        include_episodic:
+          type: boolean
+          description: Include episodic-tier memories (opt-in, D26).
+
+    RecallReport:
+      type: object
+      required: [hits]
+      properties:
+        hits:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecallHit"
+        query:
+          type: string
+        budget_used:
+          type: integer
+          format: int64
+        budget_limit:
+          type: integer
+          format: int64
+        degraded:
+          type: boolean
+          description: true when embedding service was unavailable.
+
+    RecallHit:
+      type: object
+      required: [public_id, text, score]
+      properties:
+        public_id:
+          type: string
+        text:
+          type: string
+        score:
+          type: number
+          format: double
+        rank:
+          type: integer
+        tier:
+          type: string
+        status:
+          type: string
+        trust:
+          type: string
+        source:
+          type: string
+        citations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Citation"
+        summary:
+          type: string
+          description: Session summary when the hit is consolidated from a summary.
+
+    Citation:
+      type: object
+      properties:
+        span:
+          type: object
+          properties:
+            start:
+              type: integer
+            end:
+              type: integer
+        text:
+          type: string
+
+    ForgetBody:
+      type: object
+      properties:
+        action:
+          type: string
+          description: Action: soft | restore | hard | rollback (default soft).
+          enum: [soft, restore, hard, rollback]
+        to_version:
+          type: integer
+          format: int64
+          description: Rollback target version (action = "rollback" only).
+        reason:
+          type: string
+          description: Reason recorded in the forget audit ledger.
+
+    ForgetOutcome:
+      type: object
+      required: [public_id, action]
+      properties:
+        public_id:
+          type: string
+        action:
+          type: string
+          enum: [soft, restore, hard, rollback]
+        to_version:
+          type: integer
+          format: int64
+        status:
+          type: string
+          description: |
+            The resulting status column value after a hard purge.
+            Absent on soft/restore/rollback outcomes (kept off the wire).
+
+    SummarizeInput:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Public id of the memory to summarize (omit for whole-store).
+        tier:
+          type: string
+          description: Tier filter when summarizing the whole store.
+        all:
+          type: boolean
+          description: Force re-summarization even when a summary exists.
+        force:
+          type: boolean
+          description: Alias for all; forces LLM round-trip.
+
+    SummarizeResult:
+      type: object
+      description: |
+        Either a single-memory summary (`single`) or a batch result
+        (`batch`) when no `id` is given.
+      properties:
+        single:
+          $ref: "#/components/schemas/SummarizeSingle"
+        batch:
+          $ref: "#/components/schemas/SummarizeBatch"
+
+    SummarizeSingle:
+      type: object
+      required: [public_id, summary_text]
+      properties:
+        public_id:
+          type: string
+        summary_text:
+          type: string
+        cached:
+          type: boolean
+          description: true when the summary was already present.
+
+    SummarizeBatch:
+      type: object
+      required: [summarized]
+      properties:
+        summarized:
+          type: integer
+          description: Number of memories summarized in this batch.
+        cached:
+          type: integer
+          description: Number of memories that already had a summary.
+
+    ExplainOutcome:
+      type: object
+      required: [public_id]
+      properties:
+        public_id:
+          type: string
+        text:
+          type: string
+        trust:
+          type: string
+        source:
+          type: string
+        tier:
+          type: string
+        status:
+          type: string
+        embedding_model:
+          type: string
+        embed_dim:
+          type: integer
+        confidence:
+          type: number
+          format: double
+        extracted_at:
+          type: string
+          format: date-time
+        summary:
+          type: string
+          description: Attached session summary, if any.
+        provenance:
+          type: object
+          properties:
+            source_kind:
+              type: string
+            actor_id:
+              type: string
+        created_at:
+          type: string
+          format: date-time
+        superseded_by:
+          type: string
+          description: public_id of the memory that supersedes this one, if any.
+        versions:
+          type: array
+          items:
+            $ref: "#/components/schemas/VersionInfo"
+
+    VersionInfo:
+      type: object
+      properties:
+        version:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        text:
+          type: string
+
+    StatusReport:
+      type: object
+      required: [counts]
+      properties:
+        counts:
+          type: array
+          items:
+            $ref: "#/components/schemas/CountRow"
+        earliest:
+          type: string
+          format: date-time
+        latest:
+          type: string
+          format: date-time
+        embed_dim:
+          type: integer
+
+    CountRow:
+      type: object
+      required: [status, count]
+      properties:
+        status:
+          type: string
+          description: Status bucket (active / deprecated / hard-deleted).
+        count:
+          type: integer
+        tier:
+          type: string
+          description: Tier for this bucket (when applicable).
+
+    ApiError:
+      type: object
+      required: [error, code]
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+        code:
+          type: string
+          description: Machine-readable error code (mirrors CLI taxonomy).
+          enum:
+            - NOT_FOUND
+            - ALREADY_EXISTS
+            - BAD_REQUEST
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - INTERNAL_ERROR
+            - DEGRADED
+            - RATE_LIMITED
+            - TIMEOUT

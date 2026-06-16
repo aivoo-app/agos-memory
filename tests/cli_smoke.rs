@@ -2,7 +2,8 @@
 //! (`init` / `status` / `doctor`) in a scratch directory. No new
 //! dev-dependencies — `CARGO_BIN_EXE_*` is provided by cargo itself.
 
-use std::process::Command;
+use std::io::{BufReader, Read, Write};
+use std::process::{Command, Stdio};
 
 fn binary() -> Command {
     Command::new(env!("CARGO_BIN_EXE_agos-memory"))
@@ -19,6 +20,36 @@ fn run(dir: &std::path::Path, args: &[&str]) -> (i32, String, String) {
         String::from_utf8_lossy(&out.stdout).to_string(),
         String::from_utf8_lossy(&out.stderr).to_string(),
     )
+}
+
+/// Spawn with `payload` fed to the child's stdin (then closed → EOF) and read
+/// its stdout/stderr. Used for the `import -` pipe contract.
+fn run_pipe(dir: &std::path::Path, args: &[&str], payload: &str) -> (String, String) {
+    let mut child = binary()
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn agos-memory");
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    stdin.write_all(payload.as_bytes()).expect("write payload");
+    stdin.flush().expect("flush payload");
+    drop(stdin); // EOF so `import -` sees the end of its input
+
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let mut out = String::new();
+    let mut err = String::new();
+    BufReader::new(stdout)
+        .read_to_string(&mut out)
+        .expect("read stdout");
+    BufReader::new(stderr)
+        .read_to_string(&mut err)
+        .expect("read stderr");
+    let _ = child.wait();
+    (out, err)
 }
 
 #[test]
@@ -243,6 +274,75 @@ fn summarize_offline_runs_on_an_initted_database() {
         code, 0,
         "summarize --id must succeed offline (MockChat fallback): {stderr}"
     );
+}
+
+#[test]
+fn export_import_roundtrip_across_a_fresh_database() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("agos-memory.toml"),
+        "db_path = 'smoke.db'\nagent_id = 'default'\n\n[embed]\nprovider = 'none'\n\n[llm]\nbase_url = ''\n",
+    )
+    .unwrap();
+    // Bootstrap the DB without `init --force` (which would overwrite the
+    // provider='none' config with the openai default): `session open` creates
+    // the store on first use.
+    run(dir.path(), &["session", "open"]);
+
+    let (code, stdout, _) = run(
+        dir.path(),
+        &["remember", "--text", "pipe contract memory for export"],
+    );
+    assert_eq!(code, 0, "remember failed: {stdout}");
+
+    // export --out writes the JSONL file (header + one row) and exits 0. The path
+    // is cwd-relative (run() sets current_dir), so a plain literal works.
+    let (code, stdout, stderr) = run(dir.path(), &["export", "--out", "out.jsonl"]);
+    assert_eq!(code, 0, "export failed: {stdout}{stderr}");
+    let raw = std::fs::read_to_string(dir.path().join("out.jsonl")).expect("export file readable");
+    let lines: Vec<&str> = raw.lines().collect();
+    assert!(lines.len() >= 2, "header + row expected: {raw}");
+    assert!(lines[0].contains("agos-memory-export"), "header: {raw}");
+
+    // import into a fresh database (--db) reports inserted rows.
+    let (code, stdout, stderr) = run(dir.path(), &["--db", "dst.db", "import", "out.jsonl"]);
+    assert_eq!(code, 0, "import failed: {stdout}{stderr}");
+    assert!(stdout.contains("inserted=1"), "{stdout}");
+
+    // The imported database is readable and counts one active memory.
+    let (code, stdout, _) = run(dir.path(), &["--db", "dst.db", "status"]);
+    assert_eq!(code, 0, "status on imported db failed");
+    assert!(stdout.contains("memories[active]: 1"), "{stdout}");
+}
+
+#[test]
+fn import_accepts_jsonl_on_stdin() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("agos-memory.toml"),
+        "db_path = 'smoke.db'\nagent_id = 'default'\n\n[embed]\nprovider = 'none'\n\n[llm]\nbase_url = ''\n",
+    )
+    .unwrap();
+    // Bootstrap the DB without init (init --force would overwrite provider).
+    run(dir.path(), &["session", "open"]);
+    run(
+        dir.path(),
+        &["remember", "--text", "stdin pipe contract memory"],
+    );
+
+    // Stream export to stdout and pipe it straight back in through `import -`.
+    let (jsonl, _) = run_pipe(dir.path(), &["export"], "");
+    assert!(
+        jsonl.contains("agos-memory-export"),
+        "export to stdout: {jsonl}"
+    );
+
+    let (out, err) = run_pipe(dir.path(), &["--db", "pipe.db", "import", "-"], &jsonl);
+    assert!(out.contains("inserted=1"), "import - summary: {out}{err}");
+
+    let (code, out, _) = run(dir.path(), &["--db", "pipe.db", "status"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("memories[active]: 1"), "{out}");
 }
 
 #[test]

@@ -8,7 +8,8 @@ use crate::memory::{self, jobs, sessions};
 use crate::storage::StoreHandle;
 use crate::{defaults, observe};
 
-async fn open_store(cfg: &Config) -> Result<StoreHandle> {
+/// Open the store from CLI config (shared helper; also used by the MCP server).
+pub async fn open_store(cfg: &Config) -> Result<StoreHandle> {
     StoreHandle::open(cfg, defaults::READ_POOL_SIZE).await
 }
 
@@ -105,17 +106,7 @@ pub async fn run_remember(
 
 /// Refuse extraction past the per-session token ceiling (degraded: turns still logged).
 async fn check_budget(store: &StoreHandle, cfg: &Config) -> Result<()> {
-    let ceiling = cfg.budget.max_tokens_per_session;
-    if ceiling == 0 {
-        return Ok(());
-    }
-    let used = store
-        .read(|conn| observe::ledger::tokens_since(conn, 0))
-        .await?;
-    if used > ceiling {
-        return Err(Error::BudgetExceeded { used, ceiling });
-    }
-    Ok(())
+    memory::check_session_budget(store, cfg).await
 }
 
 /// `session open|append|close|idle-close`.

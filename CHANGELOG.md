@@ -4,6 +4,88 @@ All notable changes to agos-memory are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/); versioning
 follows [SemVer](https://semver.org/).
 
+## [0.5.0] — 2026-09-22
+
+MCP server runtime: stdio + streamable HTTP, CLI `serve`, hermetic e2e.
+
+### Breaking
+- `recall::render_report` now takes the query text (`report, texts, query,
+  min_score`) so the no-hit line quotes the actual query.
+
+### Added
+- **MCP tool surface** (`agos_memory::mcp`): six tools — `remember`, `recall`,
+  `forget`, `summarize`, `explain`, `status` — exposed via rmcp's
+  `#[tool_router]` macro. Structured content (JSON) + fenced text content on
+  every tool response.
+- **Server transports** (`agos_memory::server`):
+  - `stdio.rs`: `serve --stdio` speaks newline-delimited JSON-RPC over
+    stdin/stdout via `rmcp::transport::io::stdio()`.
+  - `http.rs`: `serve --http` speaks the streamable-HTTP MCP protocol
+    (SEP-2567) over an axum router with bearer-token auth (fail-closed:
+    non-loopback origin without a token → 401).
+  - `auth.rs`: shared auth middleware used by the HTTP transport.
+- **CLI `serve` command**: `serve --stdio` (default: HTTP), `--bind`,
+  `--token`. Validates the bind/token before binding (fail-closed).
+- **CLI `export` / `import` commands**: portable, tombstone-aware JSONL
+  migration. `export [--tier X] [--out file]` streams only `active`/
+  `deprecated` rows of the store's agent (hard-purged ids never leave; piping
+  to stdout via `--out -`); `import [--dry-run] file` (or `-` for stdin) is
+  idempotent by `text_hash` (dupes bump `ref_count`), versioned on conflicting
+  `public_id` (never a silent overwrite), refuses tombstoned ids, and replays
+  trust/status/provenance byte-for-byte. Supports `export | import -`.
+- **Static musl build (`make build-musl`)**: builds
+  `x86_64-unknown-linux-musl` with a prerequisite guard (musl target +
+  `musl-gcc`) and an `ldd` static-link check; runbook "Static (musl) build"
+  documents the one-time setup.
+- **Docker (`Dockerfile` + `docker-compose.yml`)**: multi-stage image —
+  `rust:1.98-bookworm` builds the static musl binary, runtime `alpine:3.20`
+  runs it with zero add-ons. `ENTRYPOINT ["agos-memory","serve"]`, volume at
+  `/data`, `/healthz` healthcheck. Compose requires `AGOS_MEMORY_TOKEN`
+  (off-loopback bind is fail-closed), wiring it to `[server] token`. NB:
+  runtime is **alpine** rather than the originally-planned
+  distroless/static-debian12 — that base ships no shell/tools (not even an
+  executable BusyBox), so the in-container healthcheck would be impossible;
+  Alpine is musl-native and ~36 MB.
+- **E2E tests**: `tests/mcp_stdio.rs` (hermetic `provider = "none"`,
+  handshake + remember→recall over stdin/stdout) and `tests/mcp_http.rs`
+  (401 without token, 200 with, remember→recall over the wire).
+- **Dependencies**: `axum 0.8`, `tower 0.5`, `tokio-util 0.7` (rt),
+  `reqwest 0.12` (json + rustls-tls + blocking).
+- **Milestone gate `make gate-v0.5.0`** (fmt + clippy `-D warnings` + tests +
+  plan-guard + release build + smoke + **smoke-serve** + eval +
+  eval-summarize) and the `smoke-serve` recipe: spawns `serve --stdio`, runs a
+  real `tools/call` roundtrip over stdin, then starts HTTP `serve` on an
+  ephemeral loopback port and asserts `/healthz` 200. Wired into CI.
+- **`docker` CI job + `make docker-build` / `make docker-smoke`** — the only
+  end-to-end verification of the musl build (0006) and the container (0007).
+- **`docs/adr/009-interfaces-transports-auth.md`** — D38 (one router/bind/auth
+  layer/shutdown across both surfaces), D39 (docs-only clients), the
+  hand-written-OpenAPI coverage decision, and the alpine runtime deviation.
+- **`docs/interfaces.md`** — the complete v0.5.0 interface reference
+  (transports, MCP tools, JSON routes, auth, error taxonomy), reviewed against
+  the implementation.
+
+### Fixed
+- Tracing logs go to stderr, so `serve --stdio` stdout carries JSON-RPC only.
+- `make smoke-serve` wrote a *relative* `db_path` into its throwaway config, so
+  the smoke opened `<repo-root>/s.db` instead of a temporary database (and a
+  killed run could leave it locked). It now writes an absolute path, and guards
+  stdio/HTTP failures with the captured output instead of failing with a bare
+  `make: *** Error 4`; an `EXIT` trap always reaps the server and temp dir.
+- `docs/examples/__pycache__/*.pyc` was accidentally tracked; untracked, and
+  `__pycache__/` + `*.pyc` are now gitignored.
+- **`.github/workflows/ci.yml` was not valid YAML**, so GitHub Actions rejected
+  the whole workflow and *nothing* was being gated in CI. Two step names
+  contained an unquoted `: ` (`Offline eval gate (hermetic: deterministic hash
+  embedder)` and the summarize-quality gate), which YAML reads as a nested
+  mapping. Both reworded; the file now parses and the new `docker` job is live.
+- **Packaging had no automated proof.** Building the image is the only
+  end-to-end check of the musl static build (0006) and the container (0007), so
+  a push-only `docker` CI job now builds the image, starts it with the compose
+  bind/token shape, waits for `/healthz` to answer 200, and asserts the auth
+  matrix (401 without a token, 200 with). `make docker-build` / `make
+  docker-smoke` give local parity.
+
 ## [0.4.0] — 2026-09-22
 
 Consolidation & forgetting: summaries, versioning, verified deletion, TTL retention.

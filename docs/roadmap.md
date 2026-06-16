@@ -17,4 +17,6 @@ is the repo-visible source of truth).
 Status: v0.3.0 shipped (recall path, eval gate, perf bench); v0.4.0 shipped
 (consolidation & forgetting — summaries + ROUGE-L gate, versioning/rollback,
 verified deletion with tombstones, TTL retention + reaper, consolidation job,
-scheduler). MCP/HTTP interfaces are next in v0.5.0.
+scheduler); **v0.5.0 shipped** (interfaces — MCP stdio + Streamable HTTP, axum
+JSON API + bearer auth, export/import, musl static build, Docker). Interface
+reference: [interfaces.md](interfaces.md). Next: v0.6.0 (proof & hardening).

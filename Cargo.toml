@@ -1,6 +1,6 @@
 [package]
 name = "agos-memory"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Self-hosted agent memory manager: durable, tiered, citation-backed memory for AI agents via MCP and HTTP"
@@ -23,7 +23,14 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 crossbeam-channel = "0.5"
 regex = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+# MCP server tool surface (issue 0001): the official Rust SDK for the Model
+# Context Protocol. Default features give `server` + `macros` + `schemars`;
+# transports added here, HTTP nesting via axum in issue 0008. The `reqwest`
+# feature stays OFF: it would pull reqwest 0.13 alongside our 0.12 provider
+# client for no gain.
+rmcp = { version = "3.4", features = ["transport-io", "transport-streamable-http-server"] }
+schemars = "1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -32,7 +39,10 @@ futures = "0.3"
 hex = "0.4"
 sqlite-vec-src = { path = "crates/sqlite-vec-src" }
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync", "signal"] }
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 toml = "0.9"
 async-trait = "0.1"
 tracing = "0.1"

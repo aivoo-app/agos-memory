@@ -33,12 +33,25 @@ fn main() {
     let cfg = Config::load(cli.config.as_deref().map(std::path::Path::new)).unwrap_or_default();
     let _ = agos_memory::observe::init_tracing(&cfg.log_filter);
 
-    let code = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(run(cli))
-    {
+    // `serve` drives concurrent MCP sessions and transport tasks, so it needs a
+    // multi-thread runtime; every other command is a one-shot current-thread
+    // job (single-writer actor, D18).
+    let serves = matches!(cli.command, agos_memory::cli::root::Command::Serve { .. });
+    let result = if serves {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(run(cli))
+    } else {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(run(cli))
+    };
+
+    let code = match result {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("error: {e}");

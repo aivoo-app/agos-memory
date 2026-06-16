@@ -564,7 +564,11 @@ impl Config {
                 "recall.budget_split must sum to ~1.0 (got {split_sum})"
             )));
         }
-        if !self.server.bind.starts_with("127.0.0.1") && !self.server.bind.starts_with("[::1]") {
+        // Fail-closed on non-loopback binds (D11): the loopback rule is owned
+        // by `crate::server::is_loopback` so the config and the running server
+        // cannot drift (a tokenless `0.0.0.0` bind is refused here, and the
+        // HTTP auth layer refuses it again at request time).
+        if !crate::server::is_loopback(&self.server.bind) {
             if self.server.token.is_empty() {
                 return Err(Error::Config(format!(
                     "binding to a non-loopback address ({}) requires a token \

@@ -17,6 +17,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # A workflow that does not parse is silently skipped by GitHub, which
+      # disables every gate below without a red check — so verify it here first.
+      - name: Workflow YAML guard
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || pip install --quiet pyyaml
+          make yaml-guard
+
       - name: Format
         run: cargo fmt --all -- --check
 
@@ -32,10 +39,13 @@ jobs:
       - name: CLI smoke (offline, throwaway database)
         run: make smoke
 
-      - name: Offline eval gate (hermetic: deterministic hash embedder)
+      - name: Serve smoke (stdio tools/call roundtrip + HTTP /healthz)
+        run: make smoke-serve
+
+      - name: Offline eval gate (hermetic — deterministic hash embedder)
         run: make eval
 
-      - name: Offline summarize-quality gate (hermetic: ROUGE-L ≥ 0.85 over 100 fixtures)
+      - name: Offline summarize-quality gate (hermetic — ROUGE-L ≥ 0.85 over 100 fixtures)
         run: make eval-summarize
 
       - name: Plan guard (plan/ stays untracked via plan/.gitignore)
@@ -64,3 +74,51 @@ jobs:
 
       - name: Consolidation benchmark (release; 0049 quality + throughput)
         run: make bench-consolidate
+
+  # Packaging gate: building the image is the only end-to-end proof of the musl
+  # static build (0006) and the container (0007) — the image build itself
+  # performs the musl release build inside the builder stage, so a broken musl
+  # toolchain or a missing source directory fails here rather than at release
+  # time. Push-only: it is minutes of compile, not seconds.
+  docker:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build container image (static musl binary inside)
+        run: docker build -t agos-memory:ci .
+
+      - name: Start container (off-loopback bind + token; compose's shape)
+        run: |
+          docker run -d --name agos-ci \
+            -e AGOS_MEMORY_BIND=0.0.0.0:8710 \
+            -e AGOS_MEMORY_TOKEN=ci-token-0123456789 \
+            -p 127.0.0.1:8710:8710 agos-memory:ci
+          for _ in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              http://127.0.0.1:8710/healthz || true)
+            [ "$code" = 200 ] && exit 0
+            sleep 1
+          done
+          echo "container never answered /healthz:"
+          docker logs agos-ci
+          exit 1
+
+      - name: Auth matrix (public /healthz, 401 without token, 200 with)
+        run: |
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          test "$(code http://127.0.0.1:8710/healthz)" = 200
+          test "$(code http://127.0.0.1:8710/api/v1/status)" = 401
+          test "$(code -H 'Authorization: Bearer ci-token-0123456789' \
+            http://127.0.0.1:8710/api/v1/status)" = 200
+          echo "auth matrix OK"
+
+      - name: Container logs
+        if: always()
+        run: docker logs agos-ci || true
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f agos-ci || true
+

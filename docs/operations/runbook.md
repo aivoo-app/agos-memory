@@ -48,6 +48,78 @@ delete it while a process is running.
 
 `AGOS_MEMORY_LOG=debug agos-memory doctor` (same syntax as RUST_LOG).
 
+## Static (musl) build
+
+For minimal images (distroless/alpine in the Docker story) the default
+release binary is too big and dynamically linked against glibc. Build a
+statically linked `x86_64-unknown-linux-musl` binary with:
+
+```sh
+rustup target add x86_64-unknown-linux-musl   # one-time
+# install musl-gcc (musl-tools):
+#   Debian/Ubuntu: sudo apt-get install musl-tools
+#   Arch (Garuda): sudo pacman -S musl
+make build-musl
+```
+
+`build-musl` verifies both prerequisites first (clear error else), then:
+
+```sh
+cargo build --release --target x86_64-unknown-linux-musl
+```
+
+`[profile.release]` (`lto`, `strip`) is reused as-is, and the bundled
+rusqlite/sqlite-vec C code compiles with `musl-gcc` — nothing is vendored.
+The result is printed and `ldd` is checked to confirm "not a dynamic
+executable". Runtime behavior is identical to the gnu binary; a statically
+linked binary also crosses kernels without glibc (e.g. Alpine → the Docker
+image below).
+
+## Docker (0007)
+
+```sh
+export AGOS_MEMORY_TOKEN="$(openssl rand -hex 24)"   # >=16 chars, required
+docker compose up --build        # builds the musl-static image (36 MB), serves on :8710
+curl -s localhost:8710/healthz                        # liveness (no token)
+curl -s -H "Authorization: Bearer $AGOS_MEMORY_TOKEN" localhost:8710/api/v1/status
+```
+
+The compose file binds off-loopback so the port is reachable; that is
+fail-closed (D29) and **requires** `AGOS_MEMORY_TOKEN`. Runtime is
+`alpine:3.20` (musl) running the statically-linked binary. Persistent store is
+the named `agos_memory_data` volume at `/data/memory.db`; to add an embed/LLM
+endpoint, uncomment the `AGOS_MEMORY_EMBED_*` / `AGOS_MEMORY_LLM_*` lines in
+`docker-compose.yml`.
+
+### Verifying the image
+
+Building the image is the only end-to-end proof of the musl static build: the
+builder stage runs the `x86_64-unknown-linux-musl` release compile, so a broken
+musl toolchain or a missing source directory fails the build rather than
+shipping a broken artifact. Two equivalent entry points:
+
+```sh
+make docker-smoke     # build + run the image, assert /healthz 200 and the auth matrix
+```
+
+```sh
+docker build -t agos-memory:local .
+CID=$(docker run -d -e AGOS_MEMORY_BIND=0.0.0.0:8710 \
+      -e AGOS_MEMORY_TOKEN=smoke-token-0123456789 \
+      -p 127.0.0.1:8710:8710 agos-memory:local)
+# probe, then confirm the auth matrix (401 without a token, 200 with):
+curl -s -o /dev/null -w '%{http_code}\n'        localhost:8710/healthz          # 200
+curl -s -o /dev/null -w '%{http_code}\n'        localhost:8710/api/v1/status    # 401
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer smoke-token-0123456789" \
+                                                localhost:8710/api/v1/status    # 200
+docker rm -f "$CID"
+```
+
+`make docker-smoke` is what CI runs (the `docker` job, push-only); the manual
+sequence is for debugging it. If `/healthz` never answers, `docker logs` is the
+first stop — a `DbLocked` message means the volume is still held by another
+container.
+
 ## Retention & forgetting (v0.4.0)
 
 Full reference: `docs/forget.md`. Operator quick reference:

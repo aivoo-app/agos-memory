@@ -19,6 +19,7 @@
 //! (summaries, versioning, verified deletion, TTL) is v0.4.0. See
 //! `docs/architecture.md` and `docs/forget.md`.
 
+pub mod api;
 pub mod cli;
 pub mod config;
 pub mod embed;
@@ -26,9 +27,11 @@ pub mod error;
 pub mod eval;
 pub mod http;
 pub mod llm;
+pub mod mcp;
 pub mod memory;
 pub mod observe;
 pub mod recall;
+pub mod server;
 pub mod sqlite_vec;
 pub mod storage;
 pub mod util;

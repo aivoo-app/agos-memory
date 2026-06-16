@@ -1,8 +1,9 @@
 # Architecture
 
 agos-memory is a self-hosted agent memory manager. One SQLite database per
-agent; interfaces (MCP + HTTP) arrive in v0.5.0. This document describes the
-foundation (v0.1.0) and the committed shape of what follows.
+agent, reached through MCP (stdio + Streamable HTTP) or the JSON API — shipped
+in v0.5.0. This document describes the foundation (v0.1.0), the committed shape
+of what follows, and how the interface layer (v0.5.0) sits on top.
 
 ## Milestones
 
@@ -21,7 +22,7 @@ foundation (v0.1.0) and the committed shape of what follows.
 src/
 ├── main.rs          binary entry: CLI parse, tracing, exit codes
 ├── lib.rs           library root
-├── cli/             clap root + init/status/doctor
+├── cli/             clap root + init/status/doctor/remember/backup/serve/export
 ├── config.rs        layered config; fail-closed bind validation
 ├── error.rs         typed errors, actionable messages
 ├── http.rs          shared HTTP client for providers (ADR-004)
@@ -39,6 +40,11 @@ src/
 │   ├── persist.rs   embed, cosine dedup, insert memory + version + vector
 │   ├── redact.rs    secret redaction before embed and before insert
 │   └── mod.rs       `remember()`: the write-path entry point
+├── api/             transport-neutral `MemoryApi`: the six operations both
+│                    MCP and the JSON API call (0002)
+├── recall/          recall path: hybrid FTS5 + vec KNN, filter, rerank, packing
+├── mcp/             MCP tool surface (rmcp 3.4): six tools → `MemoryApi`
+├── server/          transports: stdio + Streamable HTTP, JSON API, bearer auth
 ├── embed/           Embedder trait: openai_compat | hash mock | none
 ├── llm/             ChatClient trait: openai_compat | deterministic mock
 ├── observe/         tracing init + llm_calls cost ledger
@@ -47,7 +53,10 @@ src/
 ```
 
 CLI commands: `init`, `status`, `doctor`, `backup --out <file>`,
-`remember --text <t>`, `session open|append|close|idle-close`.
+`remember --text <t>`, `session open|append|close|idle-close`,
+`serve [--stdio] [--bind] [--token]` (v0.5.0), `export|import` (JSONL
+migration), `forget` (v0.4.0). Full interface reference:
+[interfaces.md](interfaces.md).
 
 ## Concurrency model
 
@@ -80,9 +89,9 @@ provenance/importance/confidence/versioning fields), `memory_versions`,
 
 ## Write path (v0.2.0)
 
-`remember()` is the single write-path entry point (CLI now, MCP/HTTP in
-v0.5.0). One call performs, atomically per database transaction where it
-matters:
+`remember()` is the single write-path entry point (CLI, and since v0.5.0 also
+via `MemoryApi` → MCP/JSON). One call performs, atomically per database
+transaction where it matters:
 
 1. **Redact** — `sk-…`, `Bearer …`, PEM private-key blocks and
    `password=`/`api_key=`-style pairs become `[REDACTED]` *before* the text is
@@ -124,6 +133,16 @@ matters:
   orphan cleanup) driven by the `maintain` job kind and a foreground
   scheduler. Full spec in [forget.md](forget.md); rationale in
   [ADR-008](adr/008-verified-deletion-and-consolidation.md).
+- Interfaces (v0.5.0, **shipped**): one `serve` process exposes MCP
+  (Streamable HTTP at `/mcp`, or `--stdio`) and the JSON API under `/api/v1`
+  on a single axum 0.8 router, bind, bearer-auth layer and shutdown path
+  (D38). Both transports are thin shells over `src/api`'s `MemoryApi`, so the
+  business rules (budget guard, `provider = 'none'` degradation, trust
+  derivation) live in exactly one place. Auth is fail-closed: a non-loopback
+  bind without a token (or with one shorter than 16 chars) refuses to start.
+  Packaging: `make build-musl` static binary + a Docker image. Full reference
+  in [interfaces.md](interfaces.md); rationale in
+  [ADR-009](adr/009-interfaces-transports-auth.md).
 
 [ADR-001]: adr/001-why-rust-memory-store.md
 [ADR-002]: adr/002-embedding-pluggable-and-pinned.md
