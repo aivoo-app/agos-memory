@@ -78,3 +78,17 @@ memories/s (release profile; `tests/consolidate_bench.rs`).
 Quality: `make eval-summarize` gates mean ROUGE-L ≥ 0.85 over 100 hermetic
 fixtures; `make bench-consolidate` reports summarize speed, batch throughput,
 dedup and reaper rates in release profile.
+
+## Snapshot retention after a hard purge
+
+A hard purge protects recall, fresh exports, and snapshots created **after** the
+purge. `tests/leak_paths.rs` is the executable proof: it scans the live tables,
+raw database/WAL bytes, a fresh JSONL export, and a fresh snapshot for a unique
+bait after the purge, while requiring a snapshot created before the purge to
+retain that bait.
+
+Snapshots are immutable historical evidence and cannot be edited retroactively.
+Restoring an old snapshot therefore restores the forgotten memory. Keep that
+snapshot access-controlled, apply the required deletion to the restored live
+database immediately, and follow the [operations runbook](../operations/runbook.md#retention--forgetting-v040)
+for the recovery sequence.
