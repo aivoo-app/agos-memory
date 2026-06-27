@@ -39,6 +39,18 @@ pub enum Command {
     },
     /// Show database health: schema, memory counts.
     Status,
+    /// Report provider-call tokens, estimated USD, and recall budget rows.
+    Cost {
+        /// Session public id (default: all sessions).
+        #[arg(long)]
+        session: Option<String>,
+        /// Time window such as 30m, 24h, 7d, or 2w (default: all time).
+        #[arg(long)]
+        since: Option<String>,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Deeper diagnostics: sqlite-vec, FTS5, pragmas, integrity.
     Doctor,
     /// Write a verified snapshot copy of the database.
@@ -277,6 +289,11 @@ pub async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Init { force } => super::init::run(&cfg, force).await,
         Command::Status => status(&cfg).await,
+        Command::Cost {
+            session,
+            since,
+            json,
+        } => super::cost::run(&cfg, session, since, json).await,
         Command::Doctor => doctor(&cfg).await,
         Command::Backup { out } => super::backup::run(&cfg, &out).await,
         Command::Export { tier, out } => {

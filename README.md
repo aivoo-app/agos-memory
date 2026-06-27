@@ -22,7 +22,9 @@ dangerous to trust. agos-memory gives an agent persistent, auditable memory:
 - **Citations** — recalled memories link back to the turns they came from.
 - **Forgetting** — deprecation by default; verified hard delete with
   tombstones and a leak test across every read path.
-- **Cost ledger** — every LLM/embed call is recorded with estimated cost.
+- **Cost ledger** — provider calls are recorded with estimated cost; run
+  `agos-memory cost [--session …] [--since …] [--json]` for tokens, USD, and
+  per-session ceiling state.
 
 ## Quick start
 
@@ -30,6 +32,7 @@ dangerous to trust. agos-memory gives an agent persistent, auditable memory:
 cargo build --release
 ./target/release/agos-memory init
 ./target/release/agos-memory status
+./target/release/agos-memory cost --since 7d
 ./target/release/agos-memory doctor
 ```
 

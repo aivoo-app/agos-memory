@@ -340,7 +340,7 @@ impl MemoryApi {
         let kind = args.kind.as_deref().unwrap_or("fact");
         let source_kind = args.source_kind.as_deref().unwrap_or("agent");
         let confidence = args.confidence.unwrap_or(1.0);
-        crate::memory::check_session_budget(&self.store, &self.cfg).await?;
+        crate::memory::check_open_session_budget(&self.store, &self.cfg).await?;
         let row = match self.cfg.embed.provider {
             EmbedProvider::None => {
                 crate::memory::remember_degraded(

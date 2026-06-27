@@ -24,26 +24,39 @@ pub use persist::{
     persist_candidate_unembedded,
 };
 
-/// Refuse further extraction once the per-session token ceiling is spent
-/// (degraded: the turns themselves are still logged). Shared by the CLI write
-/// path and the MCP `remember` tool — the ceiling is a product rule, not a
-/// CLI rule.
+/// Refuse further work once one session's attributed token ceiling is reached.
+/// Calls without a session are sessionless and are not charged to a ceiling.
 pub async fn check_session_budget(
     store: &crate::storage::StoreHandle,
     config: &crate::config::Config,
+    session_id: Option<i64>,
 ) -> crate::error::Result<()> {
     use crate::error::Error;
     let ceiling = config.budget.max_tokens_per_session;
+    let Some(session_id) = session_id else {
+        return Ok(());
+    };
     if ceiling == 0 {
         return Ok(());
     }
     let used = store
-        .read(|conn| crate::observe::ledger::tokens_since(conn, 0))
+        .read(move |conn| crate::observe::ledger::tokens_for_session(conn, session_id))
         .await?;
-    if used > ceiling {
+    if used >= ceiling {
         return Err(Error::BudgetExceeded { used, ceiling });
     }
     Ok(())
+}
+
+/// Check the agent's current open session, if any.
+pub async fn check_open_session_budget(
+    store: &crate::storage::StoreHandle,
+    config: &crate::config::Config,
+) -> crate::error::Result<()> {
+    let session_id = crate::memory::sessions::get_open_session(store, &config.agent_id)
+        .await?
+        .map(|session| session.id);
+    check_session_budget(store, config, session_id).await
 }
 pub use redact::{REDACTED, redact};
 pub use sessions::{SessionRow, TurnRow};

@@ -66,7 +66,19 @@ pub async fn persist_candidate_full<E: Embedder + ?Sized>(
 ) -> Result<PersistReport> {
     let mut cand = cand.clone();
     cand.text = crate::memory::redact::redact(&cand.text);
+    let embed_started = std::time::Instant::now();
     let vecs = embedder.embed(std::slice::from_ref(&cand.text)).await?;
+    let embed_entry = crate::observe::ledger::estimated_entry(
+        crate::observe::ledger::Purpose::Embed,
+        embedder.model(),
+        &cand.text,
+        "",
+        embed_started.elapsed().as_millis() as u64,
+        true,
+    );
+    if let Err(e) = crate::observe::ledger::record_entry(store, &embed_entry).await {
+        tracing::warn!(error = %e, "failed to record embedding cost ledger entry");
+    }
     let vec = vecs.into_iter().next().unwrap_or_default();
     let bytes = blob(&vec);
     let dim = vec.len() as i64;

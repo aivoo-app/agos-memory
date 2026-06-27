@@ -55,7 +55,8 @@ src/
 CLI commands: `init`, `status`, `doctor`, `backup --out <file>`,
 `remember --text <t>`, `session open|append|close|idle-close`,
 `serve [--stdio] [--bind] [--token]` (v0.5.0), `export|import` (JSONL
-migration), `forget` (v0.4.0). Full interface reference:
+migration), `cost [--session <id>] [--since <dur>] [--json]` (v0.6.0),
+`forget` (v0.4.0). Full interface reference:
 [interfaces.md](interfaces.md).
 
 ## Concurrency model

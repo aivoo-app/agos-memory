@@ -146,10 +146,12 @@ Two distinct ceilings:
 
 - **`budget_tokens` per recall** — packing places hits within it; the report
   states `tokens_used` (always `<= budget_tokens`, D25).
-- **`[budget] max_tokens_per_session`** — write-path ceiling (0 = unlimited).
-  Once the session ledger has spent more than the ceiling, `remember` refuses
-  with `BudgetExceeded` (exit 8 / HTTP 429 / JSON-RPC `INVALID_PARAMS`) on all
-  three surfaces (CLI, MCP, JSON API).
+- **`[budget] max_tokens_per_session`** — attributed provider-token ceiling
+  (0 = unlimited). At or above the ceiling, further work for that session
+  returns `BudgetExceeded` (exit 8 / HTTP 429 / MCP `INVALID_PARAMS`). Only
+  ledger rows with a real `session_id` are charged; the extractor enforces it
+  before the LLM call. Run `agos-memory cost --session <public-id>` for the
+  used/remaining/over-budget view. See [observability.md](observability.md).
 
 ## 6. Trust and opt-in filters (D26/D28/D29)
 

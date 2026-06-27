@@ -40,6 +40,9 @@ delete it while a process is running.
 
 ## Monitoring
 
+- `agos-memory cost [--session <id>] [--since <duration>] [--json]` reports
+  provider tokens, estimated USD, per-purpose rows, `token_ledger` totals, and
+  the per-session ceiling. See [observability](../observability.md).
 - `llm_calls` table: cost per day/purpose (`SELECT date(created_at/1000,'unixepoch'), SUM(total_tokens) ...`).
 - `recalls` table: latency (`latency_ms`), no-hit rate (`no_hit`).
 - `jobs_dead` table: non-empty means extraction failures need attention.

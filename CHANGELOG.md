@@ -18,6 +18,17 @@ follows [SemVer](https://semver.org/).
 - **Proof artifacts** — `docs/proof.md` and ADR-010 publish the measured
   10k/100k results and decide to prototype pgvector + PostgreSQL FTS without an
   immediate production migration.
+- **Operator cost report** — `agos-memory cost [--session] [--since] [--json]`
+  reports provider tokens, estimated USD, per-purpose latency/cost, and
+  `token_ledger` totals from one shared query.
+- **Schema v5 session attribution** — `llm_calls.session_id` is nullable;
+  extraction costs are charged to the originating session, while pre-v5 and
+  sessionless calls remain visible only in totals rather than being guessed.
+
+### Changed
+- The per-session provider-token ceiling now sums only that session's attributed
+  ledger rows, refuses work at the ceiling, and treats `max_tokens_per_session=0`
+  as unlimited. `docs/observability.md` documents attribution and price caveats.
 
 ### Known limits
 - The reference 10k and 100k latency targets are **NOT MET** (p95 928.09 ms and

@@ -106,7 +106,7 @@ pub async fn run_remember(
 
 /// Refuse extraction past the per-session token ceiling (degraded: turns still logged).
 async fn check_budget(store: &StoreHandle, cfg: &Config) -> Result<()> {
-    memory::check_session_budget(store, cfg).await
+    memory::check_open_session_budget(store, cfg).await
 }
 
 /// `session open|append|close|idle-close`.
