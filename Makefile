@@ -23,11 +23,13 @@
 #   make plan-guard    # fail if plan/ or .clinerules are tracked by git
 #   make yaml-guard    # fail if a workflow is invalid YAML (silently disables CI)
 #   make ci            # plan-guard + check (what CI runs)
+#   make bench         # release perf gate: recall p95 < 150 ms @10k
+#   make bench-100k    # release perf gate: recall p95 < 300 ms @100k
 # ==============================================================================
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-.PHONY: help check fmt lint test test-fast build build-musl bench bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 gate-v0.5.0 plan-guard yaml-guard ci smoke smoke-serve docker-build docker-smoke
+.PHONY: help check fmt lint test test-fast build build-musl bench bench-100k bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 gate-v0.5.0 plan-guard yaml-guard ci smoke smoke-serve docker-build docker-smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -184,8 +186,11 @@ eval: ## Offline eval gate — hermetic (hash embedder): precision ≥0.90, reca
 eval-summarize: ## Offline summarize-quality gate — mean ROUGE-L ≥ 0.85 over fixtures/summarize_cases.jsonl (hermetic: MockChat)
 	cargo test --test summarize_quality -- --nocapture
 
-bench: ## Release perf gate: recall p95 < 150 ms (@10k: AGOS_BENCH_VECTORS=10000)
-	cargo bench --bench recall_bench
+bench: ## Release perf gate: recall p95 < 150 ms @10k memories (roadmap §10)
+	AGOS_BENCH_VECTORS=10000 cargo bench --bench recall_bench
+
+bench-100k: ## Release perf gate: recall p95 < 300 ms @100k memories (roadmap §10)
+	AGOS_BENCH_VECTORS=100000 AGOS_BENCH_SAMPLES=20 AGOS_BENCH_ASSERT=1 cargo bench --bench recall_bench
 
 bench-consolidate: ## Release consolidation bench (0049): summarize quality/speed, dedup, TTL reaper
 	cargo bench --bench consolidate_bench

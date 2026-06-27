@@ -143,6 +143,11 @@ transaction where it matters:
   Packaging: `make build-musl` static binary + a Docker image. Full reference
   in [interfaces.md](interfaces.md); rationale in
   [ADR-009](adr/009-interfaces-transports-auth.md).
+- Performance proof (v0.6.0, **in flight**): the release 10k and 100k hybrid
+  gates are measured and **NOT MET** on the reference host; the 100k miss opens
+  a bounded pgvector/PostgreSQL-FTS prototype but not an immediate migration.
+  Reproducible numbers are in [proof.md](proof.md); decision and falsifiable
+  migration triggers are in [ADR-010](adr/010-pgvector-escape-hatch.md).
 
 [ADR-001]: adr/001-why-rust-memory-store.md
 [ADR-002]: adr/002-embedding-pluggable-and-pinned.md

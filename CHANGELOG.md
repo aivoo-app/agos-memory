@@ -4,6 +4,26 @@ All notable changes to agos-memory are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/); versioning
 follows [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **v0.6.0 leak proof** — `tests/leak_paths.rs` verifies a hard-purged fact is
+  unreachable through recall, fresh snapshots, exports, every discovered SQLite
+  table/FTS shadow, and raw DB/WAL/SHM bytes. Pre-purge snapshots intentionally
+  remain a documented restore risk.
+- **100k release gate** — `make bench-100k` seeds 100,000 vectors in bounded
+  transactions, reports setup separately, and fails if hybrid recall p95 is
+  300 ms or higher. `make bench` now explicitly runs the existing 10k/150 ms
+  gate.
+- **Proof artifacts** — `docs/proof.md` and ADR-010 publish the measured
+  10k/100k results and decide to prototype pgvector + PostgreSQL FTS without an
+  immediate production migration.
+
+### Known limits
+- The reference 10k and 100k latency targets are **NOT MET** (p95 928.09 ms and
+  7472.74 ms respectively). Thresholds were not retuned; ADR-010 defines the
+  reopen/migration criteria.
+
 ## [0.5.0] — 2026-09-22
 
 MCP server runtime: stdio + streamable HTTP, CLI `serve`, hermetic e2e.
