@@ -143,6 +143,33 @@ After rerank cuts, items are packed into a token budget (`budget_tokens`, defaul
 
 **Output:** `RecallReport` with `hits` in injection order (pinned first, then by rerank score within tier), each hit tagged with `Placement` (`Full`, `Summary`, `Dropped(TierBudget|TotalBudget|Unresolved)`).
 
+### 4.1 History-size flatness proof
+
+Packing is budget-driven: increasing the eligible candidate/history count may
+change *which* equal-cost items win, but it must not increase
+`tokens_used`. `tests/token_flatness.rs` runs the real recall path with the same
+query text, 1,500-token budget, and ~200-token semantic items, while varying the
+history and candidate count:
+
+```sh
+cargo test --test token_flatness -- --nocapture --test-threads=1
+```
+
+| Corpus / candidates | Answer tokens | `token_ledger.tokens_used` | Injected items |
+|---:|---:|---:|---:|
+| 32 | 1,407 | 1,407 | 7 |
+| 128 | 1,407 | 1,407 | 7 |
+| 512 | 1,407 | 1,407 | 7 |
+
+Measured range ratio: `(1407 - 1407) / 1407 = 0.0000` (**0.00%**, target
+<5%). The suite independently checks report accounting against the audit row and
+rejects empty answers, so zero tokens cannot produce a vacuous pass. The sizes
+remain in the normal test budget; the release performance gate owns 100k scale.
+
+Mutation verification temporarily increased the packer ceiling by one token per
+candidate. The 128-history case then injected 1,608 tokens and failed the
+1,500-token invariant, proving the suite catches candidate-count-scaled packing.
+
 ---
 
 ## 5. No-Hit Semantics (D26)

@@ -24,6 +24,9 @@ follows [SemVer](https://semver.org/).
 - **Schema v5 session attribution** — `llm_calls.session_id` is nullable;
   extraction costs are charged to the originating session, while pre-v5 and
   sessionless calls remain visible only in totals rather than being guessed.
+- **Token flatness proof** — `tests/token_flatness.rs` verifies report and
+  `token_ledger` accounting stay at 1,407 injected tokens across 32 / 128 / 512
+  histories (0.00% range) and rejects vacuous empty answers.
 
 ### Changed
 - The per-session provider-token ceiling now sums only that session's attributed

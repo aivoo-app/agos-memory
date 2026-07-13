@@ -64,6 +64,28 @@ A snapshot created before the purge intentionally retains the bait. Snapshots
 cannot retroactively forget; see [forget.md](forget.md) and the
 [operations runbook](operations/runbook.md#retention--forgetting-v040).
 
+## Token-per-answer flatness
+
+Command:
+
+```sh
+cargo test --test token_flatness -- --nocapture --test-threads=1
+```
+
+Result on 2026-09-24: **PASS**. With a 1,500-token budget and equal ~200-token
+semantic items, recall injected 1,407 tokens at each history/candidate size:
+
+| Corpus / candidates | Answer tokens | `token_ledger` tokens | Range ratio |
+|---:|---:|---:|---:|
+| 32 | 1,407 | 1,407 | — |
+| 128 | 1,407 | 1,407 | — |
+| 512 | 1,407 | 1,407 | **0.0000 (0.00%)** |
+
+Threshold: `< 5%`. Every case returned seven non-empty items, and report
+accounting matched the independent `token_ledger` row. A mutation that added one
+budget token per candidate escaped the 1,500 ceiling at corpus 128 (1,608 tokens)
+and was detected; production packing was restored unchanged.
+
 ## Performance decision
 
 The 100k miss activates the escape-hatch condition. ADR-010 decides **go for
