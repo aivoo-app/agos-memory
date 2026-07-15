@@ -117,7 +117,21 @@ Default half-lives (D24):
 - `semantic`: ∞ (no decay)
 - `procedural`: ∞
 
-**Ordering:** descending `rerank_score`, tie-broken by `public_id`.
+**Ordering:** descending `rerank_score`, tie-broken by `public_id`. Pinned rows use decay `1.0` (age-immune) and are packed first.
+
+**Aged-fact proof:** `tests/aged_recall.rs` uses the real write path and
+`recall_with_clock` with `FakeClock` to prove age changes rank, not reachability:
+
+| Age | Old score | Fresh score | Old decay | Result |
+|---:|---:|---:|---:|---|
+| 90 days | 0.727852 | 0.870161 | 0.051271 | old returned second |
+| 180 days | 0.720556 | 0.870161 | 0.002629 | old returned second |
+| 365 days | 0.720162 | 0.870161 | 0.000006 | old returned second |
+
+The old fact remains above `min_score=0.35` at every point. A separate pinned
+fixture scores `0.875000` at both day 0 and day 365, with decay `1.0` at both
+points. The normal `recall()` API remains backed by `SystemClock`; the additive
+`recall_with_clock()` seam exists for deterministic callers and tests.
 
 **Cuts:** after rerank, keep top `k`, then apply `min_score` threshold (D26). `min_score` default: `0.35`.
 

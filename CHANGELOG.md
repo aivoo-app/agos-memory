@@ -24,6 +24,13 @@ follows [SemVer](https://semver.org/).
 - **Schema v5 session attribution** — `llm_calls.session_id` is nullable;
   extraction costs are charged to the originating session, while pre-v5 and
   sessionless calls remain visible only in totals rather than being guessed.
+- **Aged recall proof** — `tests/aged_recall.rs` uses the real write path plus
+  `FakeClock` to prove 90/180/365-day facts lose rank but remain reachable; the
+  180-day score is `0.720556` versus fresh `0.870161`.
+- **Deterministic recall clock** — additive `recall_with_clock()` keeps the
+  normal `SystemClock` API unchanged while making expiry/decay tests deterministic.
+- **Pinned age immunity** — pinned rows use decay `1.0`, preserving explicit
+  user instructions across time.
 - **Token flatness proof** — `tests/token_flatness.rs` verifies report and
   `token_ledger` accounting stay at 1,407 injected tokens across 32 / 128 / 512
   histories (0.00% range) and rejects vacuous empty answers.

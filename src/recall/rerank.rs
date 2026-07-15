@@ -25,6 +25,9 @@
 //!   decaying from `created_at` alone would bury exactly the memories that keep
 //!   proving useful.
 //!
+//! - **Pinned rows ignore age.** A pin is an explicit user instruction, so its
+//!   decay term is `1.0`; packing still gives it first claim on the budget.
+//!
 //! `now` is threaded in from the [`HardFilter`] that already admitted these rows,
 //! so the instant used for expiry and the instant used for decay are the same
 //! one — otherwise a row could be admitted as unexpired and then scored as
@@ -112,8 +115,13 @@ pub(super) fn rerank(
             let row = rows.get(&hit.rowid)?;
             let sim_norm = (hit.components.rrf / RRF_MAX).clamp(0.0, 1.0);
             // Decay is keyed off the row's own tier, not the hit's copy of it:
-            // the canonical row is authoritative.
-            let decay = decay(&row.tier, half_life, row, now);
+            // the canonical row is authoritative. Pinned rows are explicit user
+            // instructions, so age must not lower their score.
+            let decay = if row.pinned {
+                1.0
+            } else {
+                decay(&row.tier, half_life, row, now)
+            };
             let importance = importance_eff(row);
             let score = f64::from(weights.sim) * sim_norm
                 + f64::from(weights.importance) * importance

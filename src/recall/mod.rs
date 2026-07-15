@@ -86,6 +86,7 @@ async fn query_embedding(
     store: &StoreHandle,
     embedder: &dyn Embedder,
     text: &str,
+    now_millis: i64,
 ) -> Result<Option<Vec<f32>>> {
     let model = embedder.model().to_string();
     let dim = embedder.dim();
@@ -135,7 +136,6 @@ async fn query_embedding(
     // Best-effort cache write (single-writer thread); failures never fail
     // the recall.
     let bytes = blob(&vec);
-    let now = SystemClock.now_millis();
     let _ = store
         .write(move |conn| {
             conn.execute(
@@ -144,7 +144,7 @@ async fn query_embedding(
                  VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1)
                  ON CONFLICT(content_hash, embed_model)
                  DO UPDATE SET last_used_at = ?5, use_count = use_count + 1",
-                rusqlite::params![hash, model, dim as i64, bytes, now],
+                rusqlite::params![hash, model, dim as i64, bytes, now_millis],
             )?;
             Ok(())
         })
@@ -223,7 +223,23 @@ pub async fn recall(
     embedder: &dyn Embedder,
     q: &RecallQuery,
 ) -> Result<RecallReport> {
+    recall_with_clock(store, embedder, q, &SystemClock).await
+}
+
+/// Run recall with an injected clock (D14).
+///
+/// Production callers use [`recall`], which supplies [`SystemClock`]. Tests and
+/// deterministic tools can supply [`FakeClock`](crate::util::clock::FakeClock) to
+/// move through expiry and decay without sleeping. One instant is used for the
+/// hard filter, query-cache write, rerank, and recall audit.
+pub async fn recall_with_clock(
+    store: &StoreHandle,
+    embedder: &dyn Embedder,
+    q: &RecallQuery,
+    clock: &dyn Clock,
+) -> Result<RecallReport> {
     let started = std::time::Instant::now();
+    let now_ms = clock.now_millis();
 
     if q.text.trim().is_empty() {
         return Err(Error::InvalidInput("recall query text is empty".into()));
@@ -231,11 +247,11 @@ pub async fn recall(
 
     // One filter for the whole call: same reference instant, same allowlists,
     // in both legs and in every gate that follows (0032).
-    let filter = HardFilter::from_query(store.agent_id(), q, SystemClock.now_millis());
+    let filter = HardFilter::from_query(store.agent_id(), q, now_ms);
 
     // Embed the query (cached in embeddings_cache; 0031 note). Failure
     // degrades to keyword-only (D4), never a hard failure.
-    let query_vec = query_embedding(store, embedder, &q.text).await?;
+    let query_vec = query_embedding(store, embedder, &q.text, now_ms).await?;
     let degraded = query_vec.is_none();
 
     // Each leg retrieves `top_k × RERANK_POOL_FACTOR` candidates: rerank
@@ -288,7 +304,6 @@ pub async fn recall(
 
     let no_hit = packed.hits.iter().all(|h| !h.injected());
 
-    let now_ms = crate::util::SystemClock.now_millis();
     let report = RecallReport {
         hits: packed.hits,
         tokens_used: packed.tokens_used,

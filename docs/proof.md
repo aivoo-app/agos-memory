@@ -86,6 +86,27 @@ accounting matched the independent `token_ledger` row. A mutation that added one
 budget token per candidate escaped the 1,500 ceiling at corpus 128 (1,608 tokens)
 and was detected; production packing was restored unchanged.
 
+## Aged-fact recall
+
+Command:
+
+```sh
+cargo test --test aged_recall -- --nocapture --test-threads=1
+```
+
+Result on 2026-09-24: **PASS**. The real write path created the facts;
+`recall_with_clock` and `FakeClock` controlled expiry/decay evaluation.
+
+| Age | Old score | Fresh score | Old decay | Reachability |
+|---:|---:|---:|---:|---|
+| 90 days | 0.727852 | 0.870161 | 0.051271 | old returned second |
+| 180 days | 0.720556 | 0.870161 | 0.002629 | old returned second |
+| 365 days | 0.720162 | 0.870161 | 0.000006 | old returned second |
+
+The 180-day fact remained above the default `min_score=0.35`; age reduced its
+rank without making it unreachable. A pinned fixture scored `0.875000` at both
+day 0 and day 365, with decay `1.0`, proving pinned rows ignore age.
+
 ## Performance decision
 
 The 100k miss activates the escape-hatch condition. ADR-010 decides **go for
