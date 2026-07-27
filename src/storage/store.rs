@@ -111,6 +111,27 @@ pub struct NewMemory {
     pub source_kind: String,
 }
 
+/// Derive trust from provenance. The source vocabulary is validated by the
+/// SQLite schema; unknown values are treated conservatively as untrusted.
+pub(crate) fn trust_for_source_kind(source_kind: &str) -> &'static str {
+    match source_kind {
+        "user" | "agent" | "file" => "trusted",
+        _ => "untrusted",
+    }
+}
+
+/// Merge provenance into an existing trust value without allowing an
+/// untrusted source to be upgraded by a later trusted operation.
+pub(crate) fn trust_after_source(current: &str, source_kind: &str) -> &'static str {
+    if current == "untrusted" || trust_for_source_kind(source_kind) == "untrusted" {
+        "untrusted"
+    } else if current == "system" {
+        "system"
+    } else {
+        "trusted"
+    }
+}
+
 /// Result of a verified snapshot ([`StoreHandle::snapshot_to`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnapshotReport {
@@ -450,6 +471,7 @@ impl StoreHandle {
         let kind = m.kind.clone();
         let text = m.text.clone();
         let source_kind = m.source_kind.clone();
+        let trust = trust_for_source_kind(&source_kind);
 
         let now = crate::util::SystemClock.now_millis();
         let pid = public_id.clone();
@@ -459,7 +481,7 @@ impl StoreHandle {
                 conn.execute(
                     "INSERT INTO memories (public_id, agent_id, tier, kind, text, text_hash,
                                            status, trust, source_kind, created_at, updated_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', 'trusted', ?7, ?8, ?9)",
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10)",
                     rusqlite::params![
                         &pid,
                         agent_id,
@@ -467,6 +489,7 @@ impl StoreHandle {
                         kind,
                         text,
                         text_hash,
+                        trust,
                         source_kind,
                         now,
                         now
@@ -487,7 +510,7 @@ impl StoreHandle {
                     kind: m.kind.clone(),
                     text: m.text.clone(),
                     status: "active".into(),
-                    trust: "trusted".into(),
+                    trust: trust.into(),
                     created_at: now,
                     updated_at: now,
                     summary_text: None,
@@ -649,10 +672,26 @@ impl StoreHandle {
         change_reason: Option<&str>,
         created_by: Option<&str>,
     ) -> Result<MemoryRow> {
+        self.update_memory_with_provenance(memory_id, new_text, None, change_reason, created_by)
+            .await
+    }
+
+    /// Update text while optionally re-deriving trust from the update's
+    /// provenance. Trust is monotonic: an untrusted row never becomes trusted
+    /// merely because a later edit is attributed to a trusted source.
+    pub async fn update_memory_with_provenance(
+        &self,
+        memory_id: i64,
+        new_text: &str,
+        source_kind: Option<&str>,
+        change_reason: Option<&str>,
+        created_by: Option<&str>,
+    ) -> Result<MemoryRow> {
         let new_text_owned = new_text.to_string();
         let new_hash = crate::util::sha256_hex(&new_text_owned);
         let reason = change_reason.map(|s| s.to_string());
         let by = created_by.map(|s| s.to_string());
+        let source_kind = source_kind.map(|s| s.to_string());
 
         self.write(move |conn| {
             // Get current version number
@@ -706,10 +745,37 @@ impl StoreHandle {
                 ],
             )?;
 
-            // Update the memories row
+            // Preserve or conservatively downgrade trust; never upgrade an
+            // existing untrusted row. A provenance-bearing update also keeps
+            // the sqlite-vec metadata mirror aligned with the canonical row.
+            let (current_trust, current_source_kind): (String, String) = conn.query_row(
+                "SELECT trust, source_kind FROM memories WHERE id = ?1",
+                [memory_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let trust = source_kind
+                .as_deref()
+                .map(|kind| trust_after_source(&current_trust, kind))
+                .unwrap_or_else(|| current_trust.as_str());
+            let source_kind = match source_kind.as_deref() {
+                Some(_) if current_trust == "untrusted" => current_source_kind.as_str(),
+                Some(kind) => kind,
+                None => current_source_kind.as_str(),
+            };
+            let trust_code = match trust {
+                "trusted" => 0,
+                "untrusted" => 1,
+                "system" => 2,
+                _ => unreachable!(),
+            };
             conn.execute(
-                "UPDATE memories SET text = ?1, text_hash = ?2, updated_at = ?3 WHERE id = ?4",
-                rusqlite::params![&new_text_owned, &new_hash, now, memory_id],
+                "UPDATE memories SET text = ?1, text_hash = ?2, trust = ?3,
+                 source_kind = ?4, updated_at = ?5 WHERE id = ?6",
+                rusqlite::params![&new_text_owned, &new_hash, trust, source_kind, now, memory_id],
+            )?;
+            conn.execute(
+                "UPDATE vec_memories SET trust = ?1 WHERE rowid = ?2",
+                rusqlite::params![trust_code, memory_id],
             )?;
 
             // Fetch the updated row

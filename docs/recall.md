@@ -215,6 +215,28 @@ RecallReport {
 
 **Pinning does not launder provenance** — a pinned untrusted memory is still excluded under `Strict`.
 
+### Trust invariants across mutation routes
+
+`trust` is derived from `source_kind` on every write: `tool`, `web`, and
+`import` are always `untrusted`; `user`, `agent`, and `file` are `trusted`.
+The value is then **monotonic** across later operations: a trusted edit,
+dedup collision, import conflict, rollback, or summary cannot upgrade an
+existing untrusted row. A web/tool/import operation can conservatively
+ downgrade a trusted survivor. The canonical SQLite row is authoritative;
+`vec_memories.trust` is updated alongside it, and the post-leg Rust filter
+fails closed if metadata drifts.
+
+The six poisoning routes covered by `tests/poisoning.rs` are:
+
+| Route | Invariant | Result |
+|---|---|---|
+| Dedup | Existing row merges the worse trust; provenance is not relabelled | mitigated |
+| Version / rollback | New versions and rollback cannot upgrade untrusted rows | mitigated |
+| Import | Imported `trust` is ignored and re-derived from provenance; conflicts use the same merge | mitigated |
+| Summarization | Summary is stored on its source row, so it inherits source trust | mitigated |
+| Pinning | Pin changes ordering only; Strict still excludes untrusted rows | mitigated |
+| Fenced recall | `--include-untrusted` renders `trust="untrusted"` data blocks | mitigated |
+
 ---
 
 ## 7. Audit Trail (0036)

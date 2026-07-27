@@ -46,6 +46,7 @@ async fn provenance_decides_trust() {
     let cases = [
         ("user", "trusted"),
         ("agent", "trusted"),
+        ("file", "trusted"),
         ("tool", "untrusted"),
         ("web", "untrusted"),
         ("import", "untrusted"),
@@ -80,7 +81,7 @@ async fn provenance_decides_trust() {
 }
 
 /// A dedup bump must not launder provenance: an untrusted repeat of a trusted
-/// fact still resolves to the trusted row and leaves its trust untouched.
+/// fact downgrades the survivor and keeps the row's untrusted provenance.
 #[tokio::test]
 async fn untrusted_repeat_cannot_downgrade_or_launder() {
     let (store, _dir) = common::store("trust-launder.db").await;
@@ -102,7 +103,7 @@ async fn untrusted_repeat_cannot_downgrade_or_launder() {
     .unwrap();
 
     // Same text arriving from a scraped page: it dedups onto the trusted row,
-    // so no untrusted copy is stored and the trusted row keeps its trust.
+    // and the conservative merge downgrades the survivor to untrusted.
     let repeat = remember(
         &store,
         "semantic",
@@ -119,7 +120,8 @@ async fn untrusted_repeat_cannot_downgrade_or_launder() {
     .unwrap();
 
     assert_eq!(repeat.public_id, trusted.public_id);
-    assert_eq!(trust_of(&store, &trusted.public_id).await, "trusted");
+    assert_eq!(trust_of(&store, &trusted.public_id).await, "untrusted");
+    assert_eq!(source_of(&store, &trusted.public_id).await, "web");
 
     let pid = trusted.public_id.clone();
     let rows: i64 = store

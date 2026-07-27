@@ -110,7 +110,9 @@ transaction where it matters:
 5. **Dedup** — a KNN lookup over `vec_memories` in the same tier compares
    cosine similarity. Above `[memory] dedup_threshold` (default 0.92) the
    existing row wins: `ref_count` is bumped, `last_referenced_at` refreshed,
-   a `refines` link is added, and `dedup_cluster_id` is set. Otherwise a new
+   a `refines` link is added, and `dedup_cluster_id` is set. Trust is merged
+   conservatively: an untrusted collision downgrades a trusted survivor, while
+   a trusted collision cannot upgrade an untrusted survivor. Otherwise a new
    row is inserted together with its `memory_versions` v1 row and its vector.
 6. **Record** — extraction is a durable job (`extract`) with an idempotency
    key, `max_attempts`, exponential backoff, and a `jobs_dead` DLQ the

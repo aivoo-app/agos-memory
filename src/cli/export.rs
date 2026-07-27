@@ -11,10 +11,12 @@
 //! - Import is idempotent by `text_hash`: existing row with the same hash gets
 //!   a `ref_count` bump only (the normal dedup outcome, no version churn); a
 //!   `public_id` that exists with a *different* hash becomes a new version row
-//!   via [`StoreHandle::update_memory`] — never a silent overwrite; a
-//!   tombstoned `public_id` aborts the whole import.
-//! - Trust, status, and `source_kind` are replayed byte-for-byte: import never
-//!   launders provenance (D13 lineage).
+//!   via [`StoreHandle::update_memory_with_provenance`] — never a silent
+//!   overwrite; a tombstoned `public_id` aborts the whole import.
+//! - The JSONL `trust` field is validated for format compatibility but never
+//!   trusted as authority. Import re-derives trust from `provenance.source_kind`;
+//!   dedup bumps and conflicts merge conservatively, so an untrusted row cannot
+//!   be laundered by a later trusted operation (D13 lineage).
 //!
 //! Rows are validated before they are batched (`schema_version` header check
 //! per row, CHECK-constraint vocabularies, `text_hash` integrity), import runs
@@ -65,7 +67,8 @@ struct Header {
     agent_id: String,
 }
 
-/// Provenance block, preserved byte-for-byte on import.
+/// Provenance block. The source kind is authoritative; the separate JSONL
+/// `trust` field is retained for format compatibility but never trusted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Provenance {
     source_kind: String,
@@ -544,11 +547,11 @@ async fn process_batch(
 
     // Conflicts are versioned via `update_memory` (its own transactions) after
     // the batch lands — never nested inside the writer closure.
-    let conflicts: Vec<(i64, String)> = batch
+    let conflicts: Vec<(i64, String, String)> = batch
         .iter()
         .zip(&fates)
         .filter_map(|((_, row), fate)| match fate {
-            Fate::Conflict(id) => Some((*id, row.text.clone())),
+            Fate::Conflict(id) => Some((*id, row.text.clone(), row.provenance.source_kind.clone())),
             _ => None,
         })
         .collect();
@@ -562,13 +565,35 @@ async fn process_batch(
             for (idx, (_, row)) in rows_for_write.iter().enumerate() {
                 match &fates[idx] {
                     Fate::Bump(id) => {
+                        let (current_trust, current_source_kind): (String, String) = conn
+                            .query_row(
+                                "SELECT trust, source_kind FROM memories WHERE id = ?1",
+                                [id],
+                                |r| Ok((r.get(0)?, r.get(1)?)),
+                            )?;
+                        let trust = crate::storage::store::trust_after_source(
+                            &current_trust,
+                            &row.provenance.source_kind,
+                        );
+                        let source_kind = if current_trust == "untrusted" {
+                            current_source_kind
+                        } else {
+                            row.provenance.source_kind.clone()
+                        };
+                        let trust_code = trust_code(trust)?;
                         conn.execute(
                             "UPDATE memories
                              SET ref_count = ref_count + 1,
                                  last_referenced_at = ?1,
-                                 updated_at = ?1
-                             WHERE id = ?2",
-                            rusqlite::params![now, id],
+                                 updated_at = ?1,
+                                 trust = ?2,
+                                 source_kind = ?3
+                             WHERE id = ?4",
+                            rusqlite::params![now, trust, source_kind, id],
+                        )?;
+                        conn.execute(
+                            "UPDATE vec_memories SET trust = ?1 WHERE rowid = ?2",
+                            rusqlite::params![trust_code, id],
                         )?;
                     }
                     Fate::Conflict(_) => {}
@@ -611,7 +636,9 @@ async fn process_batch(
                                 row.summary_tokens,
                                 row.confidence,
                                 row.status,
-                                row.trust,
+                                crate::storage::store::trust_for_source_kind(
+                                    &row.provenance.source_kind,
+                                ),
                                 row.pinned,
                                 row.expires_at,
                                 row.provenance.source_kind,
@@ -647,7 +674,9 @@ async fn process_batch(
                                     bytes,
                                     row.tier,
                                     status_code(&row.status)?,
-                                    trust_code(&row.trust)?,
+                                    trust_code(crate::storage::store::trust_for_source_kind(
+                                        &row.provenance.source_kind,
+                                    ))?,
                                     row.kind,
                                     row.pinned
                                 ],
@@ -662,9 +691,15 @@ async fn process_batch(
 
     // Phase 4 — conflicts become version rows (visible history, no overwrite).
     let mut updated = 0usize;
-    for (id, text) in conflicts {
+    for (id, text, source_kind) in conflicts {
         store
-            .update_memory(id, &text, Some("import: conflicting text"), Some("import"))
+            .update_memory_with_provenance(
+                id,
+                &text,
+                Some(source_kind.as_str()),
+                Some("import: conflicting text"),
+                Some("import"),
+            )
             .await?;
         updated += 1;
     }

@@ -34,6 +34,9 @@ follows [SemVer](https://semver.org/).
 - **Token flatness proof** — `tests/token_flatness.rs` verifies report and
   `token_ledger` accounting stay at 1,407 injected tokens across 32 / 128 / 512
   histories (0.00% range) and rejects vacuous empty answers.
+- **Poisoning resistance proof** — `tests/poisoning.rs` covers dedup collisions,
+  version/rollback, crafted imports, summaries, pins, and fenced rendering;
+  trust is re-derived from provenance and cannot be upgraded by later mutations.
 
 ### Changed
 - The per-session provider-token ceiling now sums only that session's attributed
@@ -72,8 +75,9 @@ MCP server runtime: stdio + streamable HTTP, CLI `serve`, hermetic e2e.
   `deprecated` rows of the store's agent (hard-purged ids never leave; piping
   to stdout via `--out -`); `import [--dry-run] file` (or `-` for stdin) is
   idempotent by `text_hash` (dupes bump `ref_count`), versioned on conflicting
-  `public_id` (never a silent overwrite), refuses tombstoned ids, and replays
-  trust/status/provenance byte-for-byte. Supports `export | import -`.
+  `public_id` (never a silent overwrite), refuses tombstoned ids, and preserves
+  provenance while re-deriving trust from `source_kind` (import cannot declare
+  trust). Supports `export | import -`.
 - **Static musl build (`make build-musl`)**: builds
   `x86_64-unknown-linux-musl` with a prerequisite guard (musl target +
   `musl-gcc`) and an `ldd` static-link check; runbook "Static (musl) build"

@@ -114,6 +114,25 @@ pub async fn persist_candidate_full<E: Embedder + ?Sized>(
                 if sim > dedup_threshold {
                     // D20: bump refcount + last-referenced, link `refines`, and
                     // tag the whole cluster so maintenance can collapse it.
+                    // Trust is merged conservatively: a web/tool/import repeat
+                    // can never leave a trusted survivor.
+                    let (current_trust, current_source_kind): (String, String) = conn.query_row(
+                        "SELECT trust, source_kind FROM memories WHERE id = ?1",
+                        [rowid],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )?;
+                    let trust = crate::storage::store::trust_after_source(&current_trust, &source_owned);
+                    let source_kind = if current_trust == "untrusted" {
+                        current_source_kind
+                    } else {
+                        source_owned.clone()
+                    };
+                    let trust_code = match trust {
+                        "trusted" => 0,
+                        "untrusted" => 1,
+                        "system" => 2,
+                        _ => unreachable!(),
+                    };
                     let cluster: i64 = conn
                         .query_row(
                             "SELECT COALESCE(dedup_cluster_id, id) FROM memories WHERE id = ?1",
@@ -125,9 +144,14 @@ pub async fn persist_candidate_full<E: Embedder + ?Sized>(
                     conn.execute(
                         "UPDATE memories SET ref_count = ref_count + 1,
                          last_referenced_at = ?1, updated_at = ?1,
-                         dedup_cluster_id = COALESCE(dedup_cluster_id, ?2)
-                         WHERE id = ?3",
-                        rusqlite::params![now, cluster, rowid],
+                         trust = ?2, source_kind = ?3,
+                         dedup_cluster_id = COALESCE(dedup_cluster_id, ?4)
+                         WHERE id = ?5",
+                        rusqlite::params![now, trust, source_kind, cluster, rowid],
+                    )?;
+                    conn.execute(
+                        "UPDATE vec_memories SET trust = ?1 WHERE rowid = ?2",
+                        rusqlite::params![trust_code, rowid],
                     )?;
                     conn.execute(
                         "INSERT OR IGNORE INTO memory_links
@@ -321,10 +345,25 @@ async fn persist_candidate_no_vector(
                 )
                 .optional()?;
             if let Some(id) = existing {
+                let (current_trust, current_source_kind): (String, String) = conn.query_row(
+                    "SELECT trust, source_kind FROM memories WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                let trust = crate::storage::store::trust_after_source(
+                    &current_trust,
+                    &source_owned,
+                );
+                let source_kind = if current_trust == "untrusted" {
+                    current_source_kind
+                } else {
+                    source_owned.clone()
+                };
                 conn.execute(
                     "UPDATE memories SET ref_count = ref_count + 1,
-                     last_referenced_at = ?1, updated_at = ?1 WHERE id = ?2",
-                    rusqlite::params![now, id],
+                     last_referenced_at = ?1, updated_at = ?1,
+                     trust = ?2, source_kind = ?3 WHERE id = ?4",
+                    rusqlite::params![now, trust, source_kind, id],
                 )?;
                 conn.execute(
                     "INSERT OR IGNORE INTO memory_links
@@ -356,10 +395,7 @@ async fn persist_candidate_no_vector(
             }
 
             let pid = uuid::Uuid::new_v4().to_string();
-            let trust = match source_owned.as_str() {
-                "tool" | "web" | "import" => "untrusted",
-                _ => "trusted",
-            };
+            let trust = crate::storage::store::trust_for_source_kind(&source_owned);
             let status = if cand.confidence < pending_threshold {
                 "pending"
             } else {
