@@ -37,6 +37,10 @@ follows [SemVer](https://semver.org/).
 - **Poisoning resistance proof** — `tests/poisoning.rs` covers dedup collisions,
   version/rollback, crafted imports, summaries, pins, and fenced rendering;
   trust is re-derived from provenance and cannot be upgraded by later mutations.
+- **Backup/restore drill** — `tests/restore_drill.rs` and `make restore-drill`
+  exercise verified snapshot → offline replacement → normal reopen, including
+  recall, purge/tombstone state, version history, stale lock handling, and
+  fail-closed concurrent opens.
 
 ### Changed
 - The per-session provider-token ceiling now sums only that session's attributed

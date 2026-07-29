@@ -33,8 +33,32 @@ delete it while a process is running.
   must be `ok` and core-table row counts must match the live database). Takes
   the process lock: stop the running server first, or run the command from a
   dedicated invocation.
-- Restore: stop any process using the database, replace the `.db` file with
-  the snapshot, run `agos-memory doctor` (schema + integrity checks).
+- Restore: stop every process using the database before moving files. The
+  restore sequence is intentionally offline because the product enforces one
+  process per database:
+  1. Preserve the current file for rollback: `mv memory.db memory.db.pre-restore`.
+  2. With the process stopped, remove any leftover `memory.db-wal` and
+     `memory.db-shm` files. Do not copy WAL/SHM files from another database.
+  3. Keep `memory.db.lock` in place. On Unix it is an empty/stale sidecar and
+     the kernel releases its `flock`; the next open reclaims it. Do not delete
+     it while a process may still be running.
+  4. Atomically install the verified snapshot at the configured live path:
+     `cp /backups/memory-<date>.db memory.db.restore && mv memory.db.restore memory.db`.
+  5. Run `agos-memory doctor` and `agos-memory status` using the same config/DB
+     path. A successful restore must preserve schema version, embedding
+     dimension, memory/tier/status counts, vectors, version history,
+     `forget_audit`, and `tombstones`; then run a normal recall smoke query.
+  6. If startup or verification fails, stop the process and move the preserved
+     `memory.db.pre-restore` file back. Never start against a partially copied DB.
+- The runbook procedure is exercised end to end by
+  `cargo test --test restore_drill -- --nocapture --test-threads=1` (or
+  `make restore-drill`). The test replaces the live file, reopens through
+  `StoreHandle::open`, verifies product recall and purge state, proves a stale
+  `.db.lock` does not deadlock, and proves a concurrent open fails with the
+  database-lock error.
+- A snapshot taken **before** a hard purge intentionally contains the deleted
+  memory; snapshots cannot retroactively forget it. For deletion-preserving
+  recovery, restore a post-purge snapshot. See [Retention & forgetting](#retention--forgetting-v040).
 - Offline copy: stop the process, copy the `.db` file (WAL file is empty at
   clean shutdown).
 

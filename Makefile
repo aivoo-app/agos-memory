@@ -29,7 +29,7 @@
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-.PHONY: help check fmt lint test test-fast build build-musl bench bench-100k bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 gate-v0.5.0 plan-guard yaml-guard ci smoke smoke-serve docker-build docker-smoke
+.PHONY: help check fmt lint test test-fast build build-musl bench bench-100k bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 gate-v0.5.0 plan-guard yaml-guard ci smoke smoke-serve restore-drill docker-build docker-smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -46,6 +46,9 @@ test: ## Run all tests (benches self-skip their perf assertion in debug; see `be
 
 test-fast: ## Run lib + integration tests only (skips benches; fastest full-signal run)
 	cargo test --lib --tests
+
+restore-drill: ## Execute the snapshot → replace → reopen backup/restore drill
+	cargo test --test restore_drill -- --nocapture --test-threads=1
 
 check: yaml-guard fmt lint test ## Full local gate (fmt + clippy + tests + workflow YAML)
 

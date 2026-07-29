@@ -107,6 +107,33 @@ The 180-day fact remained above the default `min_score=0.35`; age reduced its
 rank without making it unreachable. A pinned fixture scored `0.875000` at both
 day 0 and day 365, with decay `1.0`, proving pinned rows ignore age.
 
+## Backup/restore drill
+
+Command:
+
+```sh
+make restore-drill
+# equivalently:
+cargo test --test restore_drill -- --nocapture --test-threads=1
+```
+
+Result on 2026-09-24: **PASS**. The drill created active semantic and episodic
+memories, a two-version history, a soft-deleted memory, and a hard-purged
+memory with tombstone/audit evidence. It took a verified `VACUUM INTO`
+snapshot, refused a concurrent second `StoreHandle::open`, released the live
+handle, replaced the database file, removed stale WAL/SHM sidecars, left the
+`.db.lock` sidecar in place, and reopened the restored file through the normal
+product path. Schema version, embedding dimension, integrity, memory/vector/FTS
+counts, version history, status counts, tombstones, and forget-audit rows all
+matched the pre-snapshot live database. Product recall returned the active
+semantic and opted-in episodic facts, while the soft-deleted and hard-purged
+facts remained absent.
+
+The runbook now requires an offline replacement, atomic snapshot install,
+verification with `doctor`/`status`, and a rollback path. It also records the
+important pre-purge snapshot caveat: restoring a pre-purge backup resurrects
+content deleted after that snapshot.
+
 ## Performance decision
 
 The 100k miss activates the escape-hatch condition. ADR-010 decides **go for
