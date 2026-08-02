@@ -150,6 +150,9 @@ pub enum Command {
         /// Emit Metrics as JSON.
         #[arg(long)]
         json: bool,
+        /// Compare against a committed eval baseline JSON artifact.
+        #[arg(long)]
+        baseline: Option<std::path::PathBuf>,
     },
     /// Manage memory lifecycle: deprecate, restore, purge, audit.
     Forget {
@@ -342,7 +345,19 @@ pub async fn run(cli: Cli) -> Result<()> {
             min_recall,
             min_mrr,
             json,
-        } => eval_cmd(&cfg, file, min_precision, min_recall, min_mrr, json).await,
+            baseline,
+        } => {
+            eval_cmd(
+                &cfg,
+                file,
+                min_precision,
+                min_recall,
+                min_mrr,
+                json,
+                baseline,
+            )
+            .await
+        }
         Command::Forget { cmd } => forget_cmd(&cfg, cmd).await,
         Command::Summarize {
             id,
@@ -622,8 +637,9 @@ async fn eval_cmd(
     min_recall: f64,
     min_mrr: f64,
     json: bool,
+    baseline: Option<std::path::PathBuf>,
 ) -> Result<()> {
-    use crate::eval::{load_cases, run, validate_cases};
+    use crate::eval::{EvalBaseline, load_cases, run, validate_cases};
 
     let cases = load_cases(&file)?;
     validate_cases(&cases)?;
@@ -641,6 +657,8 @@ async fn eval_cmd(
         println!("cases:     {}", metrics.cases);
     }
 
+    // Absolute floors are evaluated before any baseline update. An explicit
+    // update must never persist a run that already fails the product gate.
     if let Err(reason) = metrics.check(min_precision, min_recall, min_mrr) {
         for outcome in eval.imperfect() {
             eprintln!(
@@ -653,6 +671,44 @@ async fn eval_cmd(
                 outcome.relevant
             );
         }
+        return Err(crate::error::Error::InvalidInput(reason));
+    }
+
+    let update_baseline = std::env::var("AGOS_EVAL_UPDATE_BASELINE")
+        .ok()
+        .is_some_and(|value| value == "1");
+    let baseline = baseline
+        .map(|path| {
+            if update_baseline {
+                let release =
+                    std::env::var("AGOS_EVAL_RELEASE").unwrap_or_else(|_| "working-tree".into());
+                let git_commit =
+                    std::env::var("AGOS_EVAL_GIT_COMMIT").unwrap_or_else(|_| "unknown".into());
+                let artifact = EvalBaseline::new(release, git_commit, metrics.clone());
+                artifact.write(&path)?;
+                eprintln!("eval baseline updated: {}", path.display());
+                Ok(artifact)
+            } else {
+                EvalBaseline::load(&path)
+            }
+        })
+        .transpose()?;
+
+    if let Some(baseline) = &baseline
+        && let Err(reason) = metrics.check_baseline(baseline)
+    {
+        eprintln!(
+            "baseline: precision={:.6} recall={:.6} mrr={:.6} leaks={} cases={}",
+            baseline.metrics.precision,
+            baseline.metrics.recall,
+            baseline.metrics.mrr,
+            baseline.metrics.leaks,
+            baseline.metrics.cases
+        );
+        eprintln!(
+            "measured: precision={:.6} recall={:.6} mrr={:.6} leaks={} cases={}",
+            metrics.precision, metrics.recall, metrics.mrr, metrics.leaks, metrics.cases
+        );
         return Err(crate::error::Error::InvalidInput(reason));
     }
 

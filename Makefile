@@ -17,6 +17,7 @@
 #   make gate-v0.1.1   # v0.1.1 milestone gate: fmt check + clippy + tests + plan-guard
 #   make gate-v0.2.0   # v0.2.0 milestone gate: check + plan-guard + release build + CLI smoke
 #   make gate-v0.5.0   # v0.5.0 Interfaces gate: check + yaml-guard + plan-guard + release + smoke + smoke-serve + eval + eval-summarize
+#   make gate-v0.6.0   # v0.6.0 proof gate: check + guards + release + smoke + smoke-serve + eval + eval-summarize
 #   make smoke-serve   # spawn serve: stdio tools/call roundtrip + HTTP /healthz
 #   make docker-build  # build the container image (also proves the musl build)
 #   make docker-smoke  # run the image: /healthz 200 + auth matrix (mirrors CI)
@@ -29,7 +30,7 @@
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-.PHONY: help check fmt lint test test-fast build build-musl bench bench-100k bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 gate-v0.5.0 plan-guard yaml-guard ci smoke smoke-serve restore-drill docker-build docker-smoke
+.PHONY: help check fmt lint test test-fast build build-musl bench bench-100k bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 gate-v0.5.0 gate-v0.6.0 plan-guard yaml-guard ci smoke smoke-serve restore-drill docker-build docker-smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -176,15 +177,19 @@ gate-v0.2.0: ## v0.2.0 milestone gate (write path: fmt + clippy + tests + plan-g
 	cargo build --release
 	$(MAKE) smoke
 
-eval: ## Offline eval gate — hermetic (hash embedder): precision ≥0.90, recall ≥0.95, MRR ≥0.80, 0 leaks
+eval: ## Offline eval gate: absolute floors + committed baseline drift check (one percentage point)
 	@set -euo pipefail; \
 	DIR=$$(mktemp -d); \
 	DB=$$DIR/eval.db; \
+	BASELINE=fixtures/eval_baseline.json; \
+	COMMIT=$$(git rev-parse --short HEAD); \
+	trap 'rm -rf $$DIR' EXIT; \
 	printf "db_path = '%s'\nagent_id = 'eval'\n\n[embed]\nprovider = 'hash'\n" "$$DB" > $$DIR/agos-memory.toml; \
+	AGOS_EVAL_RELEASE=v0.6.0 AGOS_EVAL_GIT_COMMIT=$$COMMIT \
 	cargo run --quiet -- --config $$DIR/agos-memory.toml --db $$DB eval \
 		--file fixtures/eval_cases.jsonl \
-		--min-precision 0.90 --min-recall 0.95 --min-mrr 0.80 --json; \
-	rm -rf $$DIR
+		--baseline $$BASELINE \
+		--min-precision 0.90 --min-recall 0.95 --min-mrr 0.80 --json
 
 eval-summarize: ## Offline summarize-quality gate — mean ROUGE-L ≥ 0.85 over fixtures/summarize_cases.jsonl (hermetic: MockChat)
 	cargo test --test summarize_quality -- --nocapture
@@ -231,5 +236,18 @@ gate-v0.5.0: ## v0.5.0 Interfaces gate: fmt + clippy -D + tests + yaml-guard + p
 	$(MAKE) eval
 	$(MAKE) eval-summarize
 	@echo "gate-v0.5.0: OK — perf benches are separate release gates (make bench / make bench-consolidate)"
+
+gate-v0.6.0: ## v0.6.0 proof gate: fmt + clippy -D + tests + guards + release + smoke + smoke-serve + eval + eval-summarize
+	cargo fmt --all -- --check
+	cargo clippy --all-targets -- -D warnings
+	cargo test --all-targets
+	$(MAKE) yaml-guard
+	$(MAKE) plan-guard
+	cargo build --release
+	$(MAKE) smoke
+	$(MAKE) smoke-serve
+	$(MAKE) eval
+	$(MAKE) eval-summarize
+	@echo "gate-v0.6.0: OK — perf gates remain explicit (make bench / make bench-100k)"
 
 ci: plan-guard check ## CI pipeline (offline; no provider access needed)

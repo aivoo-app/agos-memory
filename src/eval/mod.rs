@@ -173,7 +173,7 @@ pub fn validate_cases(cases: &[EvalCase]) -> Result<()> {
 }
 
 /// Metrics for one run.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Metrics {
     /// Relevant returned / relevant available.
     pub precision: f64,
@@ -251,6 +251,127 @@ impl Metrics {
         }
         if self.mrr < min_mrr {
             return Err(format!("mrr {:.3} < {min_mrr:.3}", self.mrr));
+        }
+        Ok(())
+    }
+}
+
+/// Default allowed regression in a quality metric, expressed as a fraction
+/// (0.01 = one percentage point). Leak count is compared exactly because any
+/// new forbidden injection is a correctness failure.
+pub const DEFAULT_BASELINE_TOLERANCE: f64 = 0.01;
+
+/// A committed, release-pinned eval baseline.
+///
+/// The harness writes this artifact deliberately with
+/// `AGOS_EVAL_UPDATE_BASELINE=1`; ordinary eval runs only read and compare it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EvalBaseline {
+    /// Schema marker for future migrations of the artifact.
+    pub format: String,
+    /// Release or branch label the baseline represents.
+    pub release: String,
+    /// Short git commit that produced the baseline.
+    pub git_commit: String,
+    /// Number of corpus cases represented by the baseline.
+    pub corpus_size: u64,
+    /// Maximum allowed quality drop from the stored metrics.
+    pub tolerance: f64,
+    /// Measured metrics at the baseline commit.
+    pub metrics: Metrics,
+}
+
+impl EvalBaseline {
+    /// Build a baseline artifact from a completed run.
+    pub fn new(
+        release: impl Into<String>,
+        git_commit: impl Into<String>,
+        metrics: Metrics,
+    ) -> Self {
+        Self {
+            format: "agos-memory-eval-baseline".into(),
+            release: release.into(),
+            git_commit: git_commit.into(),
+            corpus_size: metrics.cases,
+            tolerance: DEFAULT_BASELINE_TOLERANCE,
+            metrics,
+        }
+    }
+
+    /// Load and validate a baseline artifact.
+    pub fn load(path: &Path) -> Result<Self> {
+        let raw = std::fs::read_to_string(path).map_err(|e| {
+            Error::InvalidInput(format!("cannot read eval baseline {}: {e}", path.display()))
+        })?;
+        let baseline: Self = serde_json::from_str(&raw).map_err(|e| {
+            Error::InvalidInput(format!("invalid eval baseline {}: {e}", path.display()))
+        })?;
+        if baseline.format != "agos-memory-eval-baseline" {
+            return Err(Error::InvalidInput(format!(
+                "unsupported eval baseline format `{}`",
+                baseline.format
+            )));
+        }
+        if !baseline.tolerance.is_finite() || baseline.tolerance < 0.0 {
+            return Err(Error::InvalidInput(
+                "eval baseline tolerance must be finite and non-negative".into(),
+            ));
+        }
+        if baseline.corpus_size != baseline.metrics.cases {
+            return Err(Error::InvalidInput(format!(
+                "eval baseline corpus_size {} does not match metrics.cases {}",
+                baseline.corpus_size, baseline.metrics.cases
+            )));
+        }
+        Ok(baseline)
+    }
+
+    /// Write this baseline as a reviewable JSON artifact.
+    pub fn write(&self, path: &Path) -> Result<()> {
+        let mut json = serde_json::to_string_pretty(self)?;
+        json.push('\n');
+        std::fs::write(path, json).map_err(|e| {
+            Error::InvalidInput(format!(
+                "cannot write eval baseline {}: {e}",
+                path.display()
+            ))
+        })
+    }
+}
+
+impl Metrics {
+    /// Compare a run against a committed baseline with bounded quality drift.
+    ///
+    /// Absolute floors are checked separately by [`Metrics::check`]. This
+    /// method is intentionally additive: a run may improve, but may not drop
+    /// more than the baseline tolerance without a reviewed artifact update.
+    pub fn check_baseline(&self, baseline: &EvalBaseline) -> std::result::Result<(), String> {
+        if self.cases != baseline.corpus_size {
+            return Err(format!(
+                "eval corpus size mismatch: baseline={} measured={}",
+                baseline.corpus_size, self.cases
+            ));
+        }
+        if self.leaks > baseline.metrics.leaks {
+            return Err(format!(
+                "leak regression: baseline={} measured={} (forbidden ids must never surface)",
+                baseline.metrics.leaks, self.leaks
+            ));
+        }
+        let checks = [
+            ("precision", baseline.metrics.precision, self.precision),
+            ("recall", baseline.metrics.recall, self.recall),
+            ("mrr", baseline.metrics.mrr, self.mrr),
+        ];
+        for (name, expected, measured) in checks {
+            if measured < expected - baseline.tolerance {
+                return Err(format!(
+                    "{name} regression: baseline={expected:.6} measured={measured:.6} \
+                     tolerance={:.6} (delta={:+.6})",
+                    baseline.tolerance,
+                    measured - expected
+                ));
+            }
         }
         Ok(())
     }

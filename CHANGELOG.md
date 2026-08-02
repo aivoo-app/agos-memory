@@ -41,6 +41,10 @@ follows [SemVer](https://semver.org/).
   exercise verified snapshot → offline replacement → normal reopen, including
   recall, purge/tombstone state, version history, stale lock handling, and
   fail-closed concurrent opens.
+- **Eval regression gate** — `fixtures/eval_baseline.json` is generated from
+  the deterministic 20-case hash-eval corpus; `make eval` enforces absolute
+  floors plus a one-percentage-point drift tolerance, and explicit
+  `AGOS_EVAL_UPDATE_BASELINE=1` updates remain reviewable.
 
 ### Changed
 - The per-session provider-token ceiling now sums only that session's attributed
