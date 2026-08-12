@@ -173,7 +173,68 @@ absolute floors pass and records the release, source commit, corpus size,
 tolerance, and measured metrics. See [eval.md](eval.md) for the operator
 workflow.
 
-## Performance decision
+## Sustained mixed-traffic soak
+
+Command:
+
+```sh
+make soak
+# short diagnostic:
+AGOS_SOAK_SECS=2 make soak
+```
+
+The release test uses a temporary database and the real `StoreHandle`, write
+actor, read pool, recall path, durable jobs, and worker. Its lanes exercise:
+
+- persisted remembers with varied tiers/kinds;
+- varied recalls;
+- session open/append/close and extraction jobs;
+- soft forget and hard purge; and
+- TTL-only and full maintenance (`ttl`, summarize, dedup, and orphan cleanup).
+
+The session and maintenance producers are paced to a rate the intentionally
+single-at-a-time worker can drain; this prevents an artificial queue backlog
+from being mistaken for a deadlock. The session lane produces at most five
+extractions per second and maintenance at most one job per second. The first
+60-second attempt also found and fixed a real dedup defect: maintenance writes
+textual `dedup-<hash>` cluster IDs, while the persistence path decoded the mixed
+SQLite value as INTEGER.
+
+It samples RSS and the WAL file while running, checkpoints the WAL, drains all
+jobs, checks writer health, and reconciles every generated memory id and job
+count.
+
+The default 60-second release soak on 2026-09-24 produced:
+
+| Measurement | Result |
+|---|---:|
+| Operations | 5,219 |
+| Throughput | 86.98 ops/sec |
+| Remember calls | 3,195 |
+| Retained direct rows | 2,749 |
+| Hard purges | 188 |
+| Sessions / turns | 239 / 239 |
+| Jobs drained | 298 / 298 |
+| Jobs dead | 0 |
+| RSS start / peak / end | 8,516 / 120,948 / 120,948 KiB |
+| WAL peak / end | 4,124,152 / 4,124,152 bytes |
+| Database start / end | 4,096 / 23,474,176 bytes |
+
+The short `AGOS_SOAK_SECS=2` diagnostic run also passed; its 2-second sample was
+305 operations, 152.50 ops/sec, 166 remember calls, 156 unique retained rows, 8 hard purges, 9
+sessions/turns, 11/11 jobs drained, 80,108 KiB peak RSS, 1,792,232-byte peak
+WAL, and a 6,901,760-byte final database. Both runs stayed below the default RSS,
+WAL, and database growth ceilings. The default RSS growth ceiling is 128 MiB,
+the default WAL ceiling is 32 MiB, and the default database growth ceiling is
+64 MiB. Non-Linux hosts print an RSS skip notice because `/proc/self/statm` is
+unavailable. The mutation hook `AGOS_SOAK_RETAIN_BYTES_PER_OP` retains buffers
+per writer operation; the tight-bound command
+`AGOS_SOAK_SECS=1 AGOS_SOAK_RETAIN_BYTES_PER_OP=1048576
+AGOS_SOAK_MAX_RSS_GROWTH_KIB=32768 make soak` failed as expected on the RSS
+assertion. See the [operations runbook](operations/runbook.md) for release
+usage.
+
+
 
 The 100k miss activates the escape-hatch condition. ADR-010 decides **go for
 a bounded pgvector/PostgreSQL-FTS prototype, no-go for an immediate production

@@ -133,21 +133,27 @@ pub async fn persist_candidate_full<E: Embedder + ?Sized>(
                         "system" => 2,
                         _ => unreachable!(),
                     };
-                    let cluster: i64 = conn
+                    // Maintenance may already have assigned a string cluster id
+                    // (for example `dedup-<hash>`), so this column cannot be
+                    // decoded as INTEGER even though the original schema declared
+                    // it that way. COALESCE also needs an explicit TEXT cast for
+                    // the id fallback.
+                    let cluster: String = conn
                         .query_row(
-                            "SELECT COALESCE(dedup_cluster_id, id) FROM memories WHERE id = ?1",
+                            "SELECT COALESCE(CAST(dedup_cluster_id AS TEXT), CAST(id AS TEXT))
+                             FROM memories WHERE id = ?1",
                             [rowid],
                             |r| r.get(0),
                         )
                         .optional()?
-                        .unwrap_or(rowid);
+                        .unwrap_or_else(|| rowid.to_string());
                     conn.execute(
                         "UPDATE memories SET ref_count = ref_count + 1,
                          last_referenced_at = ?1, updated_at = ?1,
                          trust = ?2, source_kind = ?3,
                          dedup_cluster_id = COALESCE(dedup_cluster_id, ?4)
                          WHERE id = ?5",
-                        rusqlite::params![now, trust, source_kind, cluster, rowid],
+                        rusqlite::params![now, trust, source_kind, &cluster, rowid],
                     )?;
                     conn.execute(
                         "UPDATE vec_memories SET trust = ?1 WHERE rowid = ?2",

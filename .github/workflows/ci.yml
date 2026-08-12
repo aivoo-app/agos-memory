@@ -75,6 +75,19 @@ jobs:
       - name: Consolidation benchmark (release; 0049 quality + throughput)
         run: make bench-consolidate
 
+  # Push-only sustained mixed-traffic proof. It is ignored by ordinary cargo
+  # tests because the release workload is intentionally longer than CI's fast
+  # integration suite; every push still refreshes this signal.
+  soak:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Sustained mixed-traffic soak (release; default 60s)
+        run: make soak
+
   # Packaging gate: building the image is the only end-to-end proof of the musl
   # static build (0006) and the container (0007) — the image build itself
   # performs the musl release build inside the builder stage, so a broken musl

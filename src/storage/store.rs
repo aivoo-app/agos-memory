@@ -295,9 +295,15 @@ impl std::fmt::Debug for Store {
 }
 
 impl StoreHandle {
-    /// Agent ID this store was opened for.
+    /// Borrow the agent ID this store was opened for.
     pub fn agent_id(&self) -> &str {
         &self.inner.agent_id
+    }
+
+    /// Whether the single-writer actor is still healthy and responsive to
+    /// scheduled work. This is read-only and does not submit a database job.
+    pub fn writer_is_healthy(&self) -> bool {
+        self.inner.writer.is_healthy()
     }
 
     /// Open (or create) the database at `cfg.db_path`, migrate, register

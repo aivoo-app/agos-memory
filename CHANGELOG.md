@@ -45,6 +45,15 @@ follows [SemVer](https://semver.org/).
   the deterministic 20-case hash-eval corpus; `make eval` enforces absolute
   floors plus a one-percentage-point drift tolerance, and explicit
   `AGOS_EVAL_UPDATE_BASELINE=1` updates remain reviewable.
+- **Sustained mixed-traffic soak** — `tests/soak.rs` and `make soak` run the
+  release writer/read/worker path through remember/recall, session extraction,
+  soft/hard forget, and maintenance, then reconcile rows/jobs and bound RSS,
+  WAL, and database growth. A short diagnostic run is available with
+  `AGOS_SOAK_SECS=2 make soak`; the release gate defaults to 60 seconds.
+  The 60-second release run on 2026-09-24 completed 5,219 operations with
+  2,749 unique retained rows, 188 hard purges, 298/298 drained jobs, zero DLQ,
+  writer health true, 120,948 KiB peak RSS, 4,124,152-byte peak WAL, and
+  23,474,176-byte final DB size.
 
 ### Changed
 - The per-session provider-token ceiling now sums only that session's attributed

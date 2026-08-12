@@ -17,7 +17,8 @@
 #   make gate-v0.1.1   # v0.1.1 milestone gate: fmt check + clippy + tests + plan-guard
 #   make gate-v0.2.0   # v0.2.0 milestone gate: check + plan-guard + release build + CLI smoke
 #   make gate-v0.5.0   # v0.5.0 Interfaces gate: check + yaml-guard + plan-guard + release + smoke + smoke-serve + eval + eval-summarize
-#   make gate-v0.6.0   # v0.6.0 proof gate: check + guards + release + smoke + smoke-serve + eval + eval-summarize
+#   make gate-v0.6.0   # v0.6.0 proof gate: check + guards + release + smoke + smoke-serve + eval + eval-summarize + soak
+#   make soak          # release mixed-traffic soak; AGOS_SOAK_SECS controls duration
 #   make smoke-serve   # spawn serve: stdio tools/call roundtrip + HTTP /healthz
 #   make docker-build  # build the container image (also proves the musl build)
 #   make docker-smoke  # run the image: /healthz 200 + auth matrix (mirrors CI)
@@ -30,7 +31,7 @@
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-.PHONY: help check fmt lint test test-fast build build-musl bench bench-100k bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 gate-v0.5.0 gate-v0.6.0 plan-guard yaml-guard ci smoke smoke-serve restore-drill docker-build docker-smoke
+.PHONY: help check fmt lint test test-fast build build-musl bench bench-100k bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 gate-v0.5.0 gate-v0.6.0 plan-guard yaml-guard ci smoke smoke-serve restore-drill soak docker-build docker-smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -50,6 +51,9 @@ test-fast: ## Run lib + integration tests only (skips benches; fastest full-sign
 
 restore-drill: ## Execute the snapshot → replace → reopen backup/restore drill
 	cargo test --test restore_drill -- --nocapture --test-threads=1
+
+soak: ## Release mixed-traffic soak test (ignored test; default 60s, AGOS_SOAK_SECS overrides)
+	AGOS_SOAK_SECS=$${AGOS_SOAK_SECS:-60} cargo test --release --test soak -- --ignored --nocapture --test-threads=1
 
 check: yaml-guard fmt lint test ## Full local gate (fmt + clippy + tests + workflow YAML)
 
@@ -237,7 +241,7 @@ gate-v0.5.0: ## v0.5.0 Interfaces gate: fmt + clippy -D + tests + yaml-guard + p
 	$(MAKE) eval-summarize
 	@echo "gate-v0.5.0: OK — perf benches are separate release gates (make bench / make bench-consolidate)"
 
-gate-v0.6.0: ## v0.6.0 proof gate: fmt + clippy -D + tests + guards + release + smoke + smoke-serve + eval + eval-summarize
+gate-v0.6.0: ## v0.6.0 proof gate: fmt + clippy -D + tests + guards + release + smoke + smoke-serve + eval + eval-summarize + soak
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
@@ -248,6 +252,7 @@ gate-v0.6.0: ## v0.6.0 proof gate: fmt + clippy -D + tests + guards + release + 
 	$(MAKE) smoke-serve
 	$(MAKE) eval
 	$(MAKE) eval-summarize
+	$(MAKE) soak
 	@echo "gate-v0.6.0: OK — perf gates remain explicit (make bench / make bench-100k)"
 
 ci: plan-guard check ## CI pipeline (offline; no provider access needed)

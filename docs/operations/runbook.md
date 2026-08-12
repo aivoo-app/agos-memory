@@ -70,6 +70,18 @@ delete it while a process is running.
 - `llm_calls` table: cost per day/purpose (`SELECT date(created_at/1000,'unixepoch'), SUM(total_tokens) ...`).
 - `recalls` table: latency (`latency_ms`), no-hit rate (`no_hit`).
 - `jobs_dead` table: non-empty means extraction failures need attention.
+- `make soak` runs the release mixed-traffic gate against a temporary database:
+  remember/recall, session open/append/close plus extraction jobs, soft/hard
+  forget, and TTL/full maintenance. It prints RSS, peak WAL, database growth,
+  operations/second, and a final reconciliation table. The default duration is
+  60 seconds; use `AGOS_SOAK_SECS=300 make soak` for a longer pre-release run.
+  The test is ignored by ordinary `cargo test` and is also run by the push-only
+  CI soak job. Linux RSS is bounded by default at 128 MiB growth; non-Linux
+  hosts print a skip notice because `/proc/self/statm` is unavailable. Optional
+  bounds can be overridden with `AGOS_SOAK_MAX_RSS_GROWTH_KIB`,
+  `AGOS_SOAK_MAX_DB_GROWTH_BYTES`, and `AGOS_SOAK_MAX_WAL_BYTES`.
+  `AGOS_SOAK_RETAIN_BYTES_PER_OP` is a mutation hook used to prove the RSS
+  assertion fails; leave it unset in normal operation.
 
 ## Log filters
 

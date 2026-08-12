@@ -59,6 +59,13 @@ async fn duplicate_write_bumps_refcount_and_links() {
     .await
     .unwrap();
 
+    // Maintenance assigns a textual cluster id. A later duplicate write must
+    // read it as text rather than trying to decode it as INTEGER.
+    store
+        .set_dedup_cluster(first.id, "dedup-string-regression")
+        .await
+        .unwrap();
+
     // Same words, different formatting → same normalized vector.
     let second = remember(
         &store,
@@ -94,7 +101,7 @@ async fn duplicate_write_bumps_refcount_and_links() {
                 [&pid],
                 |r| {
                     Ok((
-                        r.get::<_, Option<i64>>(0)?,
+                        r.get::<_, Option<String>>(0)?,
                         r.get::<_, Option<i64>>(1)?,
                         r.get::<_, i64>(2)?,
                     ))
