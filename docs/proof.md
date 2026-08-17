@@ -234,6 +234,33 @@ AGOS_SOAK_MAX_RSS_GROWTH_KIB=32768 make soak` failed as expected on the RSS
 assertion. See the [operations runbook](operations/runbook.md) for release
 usage.
 
+## OpenClaw Markdown ingest
+
+Command:
+
+```sh
+cargo test --test ingest_markdown -- --nocapture --test-threads=1
+```
+
+Result on 2026-09-24: **PASS** (5 tests). The fixture tree contained
+`MEMORY.md` plus one `memory/YYYY-MM-DD.md`; ingest stored three semantic file
+memories, preserved exact source references (`MEMORY.md:3`, `MEMORY.md:5`,
+and `memory/2026-09-24.md:3`), derived `trust='untrusted'` for every row, and
+recorded one daily session/turn pair. A second run reported `new=0`,
+`updated=0`, `unchanged=3`; editing one line created exactly one new version;
+deleting a source file reported `stale=1` while retaining the row. Dry-run wrote
+no memories or manifest, and the secret fixture stored `[REDACTED]` rather than
+`sk-liveSECRET1234567890`.
+
+The implementation uses the normal redaction/embed/dedup write path, stores the
+source hash and public id in the `meta` manifest, and treats deleted source
+items as reviewable stale references rather than silently deleting memories.
+The `file` trust decision is D46: agent-written Markdown is untrusted by
+default and requires explicit fenced-data opt-in for recall. See
+[docs/integrations/openclaw.md](integrations/openclaw.md) and
+[docs/cli.md](cli.md).
+
+
 
 
 The 100k miss activates the escape-hatch condition. ADR-010 decides **go for

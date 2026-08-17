@@ -142,7 +142,7 @@ pub struct RememberArgs {
     pub tier: Option<String>,
     /// Memory kind (default fact).
     pub kind: Option<String>,
-    /// Provenance: user/agent/tool/file/web/import (tool/web → untrusted).
+    /// Provenance: user/agent/tool/file/web/import; tool/web/import/file → untrusted.
     pub source_kind: Option<String>,
     /// Extraction confidence 0..1 (below threshold → pending).
     pub confidence: Option<f64>,

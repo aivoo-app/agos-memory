@@ -1,186 +1,110 @@
 # OpenClaw memory integration
 
-OpenClaw writes agent memory to `MEMORY.md` and daily logs in
-`memory/YYYY-MM-DD.md`. This guide ingests those files into agos-memory so the
-agent's memory is queryable over the JSON API and MCP tools and survives
-OpenClaw restarts.
+OpenClaw writes agent memory to `MEMORY.md` and daily logs under
+`memory/YYYY-MM-DD.md`. `agos-memory ingest` imports that tree through the
+normal redacted, embedded, deduplicated write path so it is queryable through
+the JSON API and MCP tools after OpenClaw restarts.
 
-## Overview
+## Quick start
 
-The ingestion path is: OpenClaw markdown files → `remember` calls → memory
-store. Each ingested line becomes one memory with `source_kind = "file"`
-(trusted, see §6). To keep a line traceable to its origin, put the reference
-**in the text** — the write API takes `text`, `tier`, `kind`, `source_kind`,
-and `confidence`, and nothing else:
+Stop the writer/serve process for the database before running the CLI command;
+one process owns the database at a time.
 
-```
-memory: 4f1c… (tier=episodic, kind=fact, source_kind=file)
-text:    "Deploys go out on Thursdays. [source: MEMORY.md:12]"
-```
-
-The interface reference is [docs/interfaces.md](../interfaces.md); the raw API
-recipes are in [`docs/examples/`](../examples/).
-
-## 1. One-time setup
-
-Initialize a store:
-
-```bash
+```sh
 agos-memory --config /abs/path/agos-memory.toml init
+agos-memory --config /abs/path/agos-memory.toml ingest /abs/path/openclaw
 ```
 
-Config:
+Use a throwaway database for a dry run:
 
-```toml
-db_path = "/abs/path/openclaw-memories.db"   # absolute: see §6
-agent_id = "openclaw-prod"
-
-[embed]
-provider = "openai_compat"   # needs a reachable /v1/embeddings endpoint
-
-[llm]
-# Needed by summarize (session close / consolidation).
-# base_url = "http://127.0.0.1:8080"
-# model = "gpt-4o-mini"
-
-[server]
-bind = "127.0.0.1:8710"
-token = "at-least-16-characters"
+```sh
+agos-memory --config /abs/path/agos-memory.toml \
+  ingest /abs/path/openclaw --dry-run
 ```
 
-Start the server:
+The command accepts either the OpenClaw directory or one Markdown file. A
+directory discovers `MEMORY.md` and valid `memory/YYYY-MM-DD.md` files in
+lexicographic order.
 
-```bash
-agos-memory serve --config /abs/path/agos-memory.toml
+## Parsing and provenance
+
+Headings and blank lines are skipped. Each list item or paragraph becomes one
+memory:
+
+- `source_kind = "file"`
+- `source_ref = "MEMORY.md:12"` or
+  `source_ref = "memory/2026-09-24.md:8"`
+- `tier = "semantic"`, `kind = "fact"`, `confidence = 0.9`
+
+Daily-file items are also recorded in the normal sessions/turns log. The source
+reference is stored as provenance metadata; it is not appended to the memory
+text. A manifest in the store's `meta` table maps each `file:line` to a stable
+hash and public id.
+
+An unchanged tree is a no-op:
+
+```text
+ingest seen=3 new=0 updated=0 unchanged=3 stale=0 skipped=0
 ```
 
-`serve` holds the single-writer lock for its lifetime, so run every ingestion
-step as an API client (§2) rather than as a second CLI process on the same
-database — a `remember` invocation against a live server refuses with
-`DbLocked` (exit 4).
+Editing one item updates only that memory's version. Removing a line or file
+reports it as `stale=N`; the memory is retained for operator review and must be
+explicitly forgotten with the normal lifecycle command. This prevents a source
+deletion from silently becoming a deletion in the memory database.
 
-## 2. Ingestion recipe
+## Trust policy
 
-Save as `ingest.sh` and run it once per file:
+`file` is **untrusted by default**. OpenClaw may write files derived from web
+pages, tools, fetched documents, or other agent output, so file provenance must
+not mint trusted instructions. Strict recall therefore excludes these rows.
+Callers that intentionally consume them pass `include_untrusted: true`; the
+consumer receives fenced data with `trust="untrusted"` and must not execute it
+as instructions.
 
-```bash
-#!/usr/bin/env bash
-# Ingest one OpenClaw markdown file into agos-memory (JSON API).
-# Every non-empty, non-heading line becomes one memory with source_kind = "file".
-set -euo pipefail
+This decision is part of D46 and applies to every write path, not only the
+ingest command. A later trusted edit, pin, import, dedup collision, rollback,
+or summary cannot upgrade an untrusted row.
 
-BASE="${BASE:-http://127.0.0.1:8710}"
-TOKEN="${TOKEN:-your-token}"
-AUTH=(-H "Authorization: Bearer $TOKEN")
-FILE="${1:?usage: ingest.sh <markdown-file>}"
-STORE_ID="$(basename "$FILE")"
+## Querying
 
-line=0
-ingested=0
-while IFS= read -r text; do
-    line=$((line + 1))
-    # Skip blank lines and headings.
-    [ -n "$text" ] || continue
-    case "$text" in \#*) continue ;; esac
+```sh
+BASE=http://127.0.0.1:8710
+TOKEN=your-token
 
-    # jq builds the body, so quotes/newlines in the text cannot break the JSON.
-    body=$(jq -nc --arg t "$text [source: ${STORE_ID}:${line}]" \
-        '{text: $t, source_kind: "file", tier: "semantic", kind: "fact", confidence: 0.9}')
-
-    curl -sS -X POST "$BASE/api/v1/remember" \
-        -H 'Content-Type: application/json' "${AUTH[@]}" -d "$body" > /dev/null
-    ingested=$((ingested + 1))
-done < "$FILE"
-
-echo "ingested $ingested line(s) from $FILE"
-```
-
-Then:
-
-```bash
-BASE=... TOKEN=... ./ingest.sh /path/to/MEMORY.md
-BASE=... TOKEN=... ./ingest.sh /path/to/memory/2026-09-22.md
-```
-
-Notes:
-
-- `tier = "semantic"` is deliberate: OpenClaw's `MEMORY.md` holds durable
-  facts, and semantic memories are recall-eligible by default, while
-  `episodic` (the `remember` default) needs `include_episodic: true`.
-- `confidence = 0.9` keeps writes above the pending threshold; lower values
-  park a memory in `pending` until `include_pending` is passed.
-- Headings and blank lines are skipped, so the ingested count can be lower
-  than the file's line count.
-
-## 3. Idempotency
-
-Re-running the script over the same file is safe:
-
-- With a vector embedder, near-identical text is deduplicated at insert time
-  (cosine similarity ≥ 0.92): the existing row's `ref_count` is bumped instead
-  of a second row being created.
-- In keyword-only mode (`provider = "none"`) dedup falls back to an exact
-  SHA-256 text hash.
-- Edited lines have different text, so they insert as new memories (and, when
-  they supersede an older line, the old one stays until you `forget` it).
-
-## 4. Querying ingested memories
-
-```bash
-# Recall by topic (semantic tier needs no opt-in).
 curl -sS -X POST "$BASE/api/v1/recall" \
-    -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
-    -d '{"text": "deploy schedule", "k": 10}' | jq .
-
-# Provenance drill-down: the id is a *path* parameter.
-curl -sS "$BASE/api/v1/explain/<public_id>" -H "Authorization: Bearer $TOKEN" | jq .
-
-# Health: counts per status + index cache.
-curl -sS "$BASE/api/v1/status" -H "Authorization: Bearer $TOKEN" | jq .
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"text":"deploy schedule","k":10,"include_untrusted":true}' | jq .
 ```
 
-The `[source: FILE:LINE]` suffix recorded in the text is what makes a hit
-traceable back to the OpenClaw file; `explain` adds the store-side provenance
-(`source_kind`, `source_ref`, `links`, inject history).
+Use `explain` to inspect the stored source kind and `source_ref`:
 
-## 5. OpenClaw agent integration
+```sh
+curl -sS "$BASE/api/v1/explain/<public_id>" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+```
 
-If the OpenClaw runtime supports MCP tool providers, wire it to
-`agos-memory serve --stdio` as described in
-[docs/integrations/hermes.md](hermes.md): the agent can then `remember` and
-`recall` directly, with no markdown round trip.
+## Running against a live server
 
-If the runtime only writes markdown files, run the ingestion script on a timer
-(cron, systemd timer, or OpenClaw's own hooks). Two shapes are supported:
+`serve` owns the database writer lock for its lifetime. A CLI `ingest` against
+a live server correctly fails with `DbLocked` (exit 4). Stop the server and run
+the command, or keep using the JSON API from a client while the server owns the
+store. The API does not bypass trust or provenance rules.
 
-- **Client-side timer** (recommended while a server is running): call the JSON
-  API as §2 does — any number of clients may share one `serve` process.
-- **In-process jobs**: `agos-memory maintain --ttl`, `maintain --consolidate`,
-  or `maintain --schedule`, which honors `[memory] reaper_hour` and
-  `[consolidate]` (enabled by default, `day = 0` Sunday / `hour = 4` UTC).
-  These need the store lock, so run them only while no `serve` process is up,
-  or from a process that owns the database.
+## Troubleshooting
 
-## 6. Trust policy
+- **No Strict recall results** — file memories are untrusted by design; use
+  `include_untrusted: true` only in a consumer that renders fenced data.
+- **Duplicate-looking rows after editing** — inspect the manifest/source refs
+  and review the old row; edits create a new version, while unrelated duplicate
+  content may be handled by the normal dedup policy.
+- **`DbLocked`** — stop `serve` before running the CLI ingest command.
+- **Embedding provider error** — configure `[embed]` or use
+  `provider = "none"` for the documented keyword-only degraded path. Secrets
+  are redacted before either storage or embedding.
+- **Unexpected item count** — headings and blank lines are skipped; list items
+  and paragraphs are the documented granularity.
 
-OpenClaw-written memories arrive as `source_kind = "file"`, which maps to
-`trust = 'trusted'` — only `tool`, `web`, and `import` are forced to
-`untrusted` (D29). If you ingest files from an untrusted source (a downloaded
-dump, a scraped page), send `source_kind = "import"` or `"web"` instead: those
-memories are fenced and surface only when the caller passes
-`include_untrusted: true`.
-
-## 7. Troubleshooting
-
-- **Ingested lines never show up in recall** — check the tier: this recipe
-  writes `semantic` (eligible by default), but anything written as `episodic`
-  needs `include_episodic: true`. Also confirm the embedder: with
-  `provider = "none"` only the FTS5 keyword leg runs, so a query of synonyms
-  can miss.
-- **Duplicates after editing a line** — dedup compares text, not provenance.
-  Edit-and-reingest creates a second memory; `forget` the old one (soft, then
-  hard) to keep the store clean.
-- **`DbLocked` (exit 4) from a CLI ingestion loop** — a `serve` process holds
-  the database. Ingest through the API (§2) or stop the server.
-- **`code = "EMBEDDER"` / HTTP 502 while ingesting** — the embedding endpoint
-  in `[embed] base_url` is unreachable; nothing is written for that line.
+For the complete CLI surface, see [docs/cli.md](../cli.md). For API transport
+and trust details, see [docs/interfaces.md](../interfaces.md). For deletion and
+restore behavior, see [docs/forget.md](../forget.md).

@@ -98,9 +98,10 @@ transaction where it matters:
    `password=`/`api_key=`-style pairs become `[REDACTED]` *before* the text is
    embedded or stored, so a secret never reaches the provider, the vector
    table, or `memories.text`.
-2. **Trust** — provenance decides trust: `tool`, `web` and `import` sources
-   produce `trust = 'untrusted'` memories; the default recall policy never
-   injects them ([ADR-001] lineage, D13).
+2. **Trust** — provenance decides trust: `tool`, `web`, `import`, and `file`
+   sources produce `trust = 'untrusted'` memories; only `user` and `agent` are
+   trusted. The default recall policy never injects them ([ADR-001] lineage,
+   D13).
 3. **Status** — candidates below
    `[memory] pending_threshold` (default 0.4) are stored as
    `status = 'pending'` rather than `active`.

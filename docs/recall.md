@@ -217,9 +217,10 @@ RecallReport {
 
 ### Trust invariants across mutation routes
 
-`trust` is derived from `source_kind` on every write: `tool`, `web`, and
-`import` are always `untrusted`; `user`, `agent`, and `file` are `trusted`.
-The value is then **monotonic** across later operations: a trusted edit,
+`trust` is derived from `source_kind` on every write: `tool`, `web`, `import`, and
+`file` are always `untrusted`; only `user` and `agent` are trusted. This includes
+agent-written Markdown files: they may contain fetched or tool-derived text, so
+the safe default is fenced data rather than instructions. The value is then **monotonic** across later operations: a trusted edit,
 dedup collision, import conflict, rollback, or summary cannot upgrade an
 existing untrusted row. A web/tool/import operation can conservatively
  downgrade a trusted survivor. The canonical SQLite row is authoritative;

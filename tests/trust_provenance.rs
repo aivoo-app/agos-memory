@@ -37,7 +37,7 @@ async fn source_of(store: &agos_memory::storage::StoreHandle, public_id: &str) -
         .unwrap()
 }
 
-/// The three untrusted provenance classes, plus the trusted default.
+/// The untrusted provenance classes, plus the trusted user/agent classes.
 #[tokio::test]
 async fn provenance_decides_trust() {
     let (store, _dir) = common::store("trust.db").await;
@@ -46,7 +46,7 @@ async fn provenance_decides_trust() {
     let cases = [
         ("user", "trusted"),
         ("agent", "trusted"),
-        ("file", "trusted"),
+        ("file", "untrusted"),
         ("tool", "untrusted"),
         ("web", "untrusted"),
         ("import", "untrusted"),

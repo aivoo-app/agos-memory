@@ -54,6 +54,11 @@ follows [SemVer](https://semver.org/).
   2,749 unique retained rows, 188 hard purges, 298/298 drained jobs, zero DLQ,
   writer health true, 120,948 KiB peak RSS, 4,124,152-byte peak WAL, and
   23,474,176-byte final DB size.
+- **OpenClaw Markdown ingest** — `agos-memory ingest <dir-or-file> [--dry-run]`
+  parses `MEMORY.md` and `memory/YYYY-MM-DD.md`, stores `file:line` provenance,
+  is idempotent, redacts secrets through the normal write path, records daily
+  items as sessions/turns, and treats agent-authored `file` memories as
+  untrusted by default.
 
 ### Changed
 - The per-session provider-token ceiling now sums only that session's attributed

@@ -157,8 +157,8 @@ Two distinct ceilings:
 
 - Recall is **Strict** by default: only `trusted`/`system` memories are
   eligible.
-- `remember` derives trust from `source_kind`: `tool`, `web`, `import` →
-  `untrusted`; `user`, `agent`, `file` → `trusted`.
+- `remember` derives trust from `source_kind`: `tool`, `web`, `import`, and
+  `file` → `untrusted`; only `user` and `agent` → `trusted`.
 - Opt-ins are per recall call and never relabel a memory:
   `include_untrusted` (fenced data), `include_episodic` (episodic tier is
   opt-in), `include_pending` (below `pending_threshold`).

@@ -29,7 +29,7 @@ fn blob(vec: &[f32]) -> Vec<u8> {
 /// lookup, the refcount bump or the fresh insert of `memories` +
 /// `memory_versions` v1 + `vec_memories`.
 ///
-/// Trust: `source_kind` web/tool/import forces `trust='untrusted'`.
+/// Trust: `source_kind` web/tool/import/file forces `trust='untrusted'`.
 /// Low confidence (< `pending_threshold`) forces `status='pending'`.
 /// Text is redacted BEFORE embedding so secrets never reach the provider.
 pub async fn persist_candidate(
@@ -191,10 +191,7 @@ pub async fn persist_candidate_full<E: Embedder + ?Sized>(
             let pid = uuid::Uuid::new_v4().to_string();
             let hash = crate::util::sha256_hex(&cand.text);
             let pid2 = pid.clone();
-            let trust = match source_owned.as_str() {
-                "tool" | "web" | "import" => "untrusted",
-                _ => "trusted",
-            };
+            let trust = crate::storage::store::trust_for_source_kind(&source_owned);
             let status = if cand.confidence < pending_threshold {
                 "pending"
             } else {

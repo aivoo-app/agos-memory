@@ -17,7 +17,11 @@ dangerous to trust. agos-memory gives an agent persistent, auditable memory:
 
 - **Tiers** — working (current session), episodic (events), semantic
   (durable facts), procedural (trigger -> behavior rules).
-- **Provenance & trust** — every memory records where it came from; untrusted
+- **OpenClaw ingest** — `agos-memory ingest <dir-or-file> [--dry-run]` parses
+  `MEMORY.md` and `memory/YYYY-MM-DD.md`, preserves `file:line` provenance, is
+  idempotent, redacts secrets, records daily items as sessions/turns, and treats
+  agent-authored `file` memories as untrusted by default.
+- **Provenance and trust** — every memory records where it came from; untrusted
   memories are never injected by default.
 - **Citations** — recalled memories link back to the turns they came from.
 - **Forgetting** — deprecation by default; verified hard delete with

@@ -115,7 +115,7 @@ pub struct NewMemory {
 /// SQLite schema; unknown values are treated conservatively as untrusted.
 pub(crate) fn trust_for_source_kind(source_kind: &str) -> &'static str {
     match source_kind {
-        "user" | "agent" | "file" => "trusted",
+        "user" | "agent" => "trusted",
         _ => "untrusted",
     }
 }
@@ -526,6 +526,32 @@ impl StoreHandle {
             .await?;
 
         Ok(row)
+    }
+
+    /// Attach a source reference to an existing memory.
+    ///
+    /// Ingest adapters use this after the normal redacted/embedded write path
+    /// returns. The reference is provenance metadata only; it never changes the
+    /// text or trust value.
+    pub async fn set_source_ref(&self, memory_id: i64, source_ref: &str) -> Result<()> {
+        if source_ref.trim().is_empty() || source_ref.len() > 1024 {
+            return Err(Error::InvalidInput(
+                "source_ref must be 1..=1024 bytes".into(),
+            ));
+        }
+        let source_ref = source_ref.to_string();
+        self.write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET source_ref = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![
+                    &source_ref,
+                    crate::util::SystemClock.now_millis(),
+                    memory_id
+                ],
+            )?;
+            Ok(())
+        })
+        .await
     }
 
     /// Count memories grouped by status.

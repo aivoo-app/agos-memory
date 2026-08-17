@@ -76,6 +76,14 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Ingest OpenClaw `MEMORY.md` and `memory/YYYY-MM-DD.md` files.
+    Ingest {
+        /// OpenClaw directory or one Markdown file.
+        path: std::path::PathBuf,
+        /// Parse and report without writing memories.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Store one fact as a durable memory (redacted, embedded, deduped).
     Remember {
         /// The fact text.
@@ -87,7 +95,7 @@ pub enum Command {
         /// Memory kind (default fact).
         #[arg(long, default_value = "fact")]
         kind: String,
-        /// Provenance: user/agent/tool/file/web/import (tool/web → untrusted).
+        /// Provenance: user/agent/tool/file/web/import; tool/web/import/file → untrusted.
         #[arg(long, default_value = "user")]
         source_kind: String,
         /// Extraction confidence 0..1 (below threshold → pending).
@@ -303,6 +311,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             super::export::run_export(&cfg, tier.as_deref(), out.as_deref()).await
         }
         Command::Import { file, dry_run } => super::export::run_import(&cfg, &file, dry_run).await,
+        Command::Ingest { path, dry_run } => super::ingest::run(&cfg, &path, dry_run).await,
         Command::Remember {
             text,
             tier,
