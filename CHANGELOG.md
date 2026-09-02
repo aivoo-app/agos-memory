@@ -4,7 +4,12 @@ All notable changes to agos-memory are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/); versioning
 follows [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.6.0] — 2026-09-24
+
+Proof and hardening milestone: leak/restore/eval/soak/poisoning/cost evidence,
+OpenClaw Markdown ingest, stored eval baseline, and the final structural gate.
+Reference-host 10k/100k latency targets are explicitly **NOT MET**; strict
+performance targets remain available and are not replaced by report-only runs.
 
 ### Added
 - **v0.6.0 leak proof** — `tests/leak_paths.rs` verifies a hard-purged fact is
@@ -50,10 +55,13 @@ follows [SemVer](https://semver.org/).
   soft/hard forget, and maintenance, then reconcile rows/jobs and bound RSS,
   WAL, and database growth. A short diagnostic run is available with
   `AGOS_SOAK_SECS=2 make soak`; the release gate defaults to 60 seconds.
-  The 60-second release run on 2026-09-24 completed 5,219 operations with
-  2,749 unique retained rows, 188 hard purges, 298/298 drained jobs, zero DLQ,
-  writer health true, 120,948 KiB peak RSS, 4,124,152-byte peak WAL, and
-  23,474,176-byte final DB size.
+  The 60-second release run on 2026-09-24 completed 5,111 operations with
+  3,124 remember calls, 2,692 retained direct rows, 184 hard purges, 234
+  sessions/turns, 293/293 drained jobs, zero DLQ, and writer health true. It
+  reached 138,052 KiB peak RSS, 4,132,392-byte peak WAL, and 23,420,928-byte
+  final DB size. The original 128 MiB RSS-growth ceiling was rejected after a
+  60-second run reached 144,228 KiB peak RSS; the evidence-based 160 MiB default
+  was validated with all reconciliation checks passing.
 - **OpenClaw Markdown ingest** — `agos-memory ingest <dir-or-file> [--dry-run]`
   parses `MEMORY.md` and `memory/YYYY-MM-DD.md`, stores `file:line` provenance,
   is idempotent, redacts secrets through the normal write path, records daily

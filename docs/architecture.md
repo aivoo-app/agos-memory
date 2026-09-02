@@ -2,8 +2,10 @@
 
 agos-memory is a self-hosted agent memory manager. One SQLite database per
 agent, reached through MCP (stdio + Streamable HTTP) or the JSON API — shipped
-in v0.5.0. This document describes the foundation (v0.1.0), the committed shape
-of what follows, and how the interface layer (v0.5.0) sits on top.
+in v0.5.0. v0.6.0 closes the proof/hardening milestone with cost, leak,
+restore, eval, poisoning, soak, and OpenClaw ingest evidence. This document
+describes the foundation (v0.1.0), the committed shape of what follows, and
+how the interface layer (v0.5.0) sits on top.
 
 ## Milestones
 
@@ -14,7 +16,7 @@ of what follows, and how the interface layer (v0.5.0) sits on top.
 | v0.3.0  | Recall path: hybrid FTS5 + vector retrieval, hard filters, rerank, packing |
 | v0.4.0  | Consolidation & forgetting: summaries, versioning, verified deletion |
 | v0.5.0  | Interfaces: MCP (stdio + Streamable HTTP), JSON API, integrations |
-| v0.6.0  | Proof: load tests, cost report, leak tests, backups |
+| v0.6.0 | **shipped** — load tests, cost report, leak tests, backups, eval, poisoning, soak, OpenClaw ingest; all §10 evidence published; reference-host 10k/100k latency targets **NOT MET** |
 
 ## Module map
 
@@ -55,7 +57,8 @@ src/
 CLI commands: `init`, `status`, `doctor`, `backup --out <file>`,
 `remember --text <t>`, `session open|append|close|idle-close`,
 `serve [--stdio] [--bind] [--token]` (v0.5.0), `export|import` (JSONL
-migration), `cost [--session <id>] [--since <dur>] [--json]` (v0.6.0),
+migration), `ingest <dir-or-file>` (OpenClaw Markdown, v0.6.0),
+`cost [--session <id>] [--since <dur>] [--json]` (v0.6.0),
 `forget` (v0.4.0). Full interface reference:
 [interfaces.md](interfaces.md).
 

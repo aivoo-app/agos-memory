@@ -9,7 +9,10 @@
 #   make lint          # cargo clippy --all-targets -- -D warnings
 #   make test          # cargo test --all-targets (benches run informational in debug)
 #   make test-fast     # cargo test --lib --tests (no benches/doc tests)
-#   make bench         # release perf gate: recall p95 < 150 ms (AGOS_BENCH_VECTORS=10000 for @10k)
+#   make bench         # strict release perf gate: recall p95 < 150 ms @10k (NOT MET is a failure)
+#   make bench-report  # release 10k measurement, report threshold result without asserting
+#   make bench-100k    # strict release perf gate: recall p95 < 300 ms @100k (NOT MET is a failure)
+#   make bench-100k-report # release 100k measurement, report threshold result without asserting
 #   make build         # release build
 #   make build-musl    # static release build for x86_64-unknown-linux-musl
 #                        (requires musl-gcc; see docs/operations/runbook.md)
@@ -17,7 +20,7 @@
 #   make gate-v0.1.1   # v0.1.1 milestone gate: fmt check + clippy + tests + plan-guard
 #   make gate-v0.2.0   # v0.2.0 milestone gate: check + plan-guard + release build + CLI smoke
 #   make gate-v0.5.0   # v0.5.0 Interfaces gate: check + yaml-guard + plan-guard + release + smoke + smoke-serve + eval + eval-summarize
-#   make gate-v0.6.0   # v0.6.0 proof gate: check + guards + release + smoke + smoke-serve + eval + eval-summarize + soak
+#   make gate-v0.6.0   # v0.6.0 proof gate: structural checks + report-only 10k/100k measurements + soak
 #   make soak          # release mixed-traffic soak; AGOS_SOAK_SECS controls duration
 #   make smoke-serve   # spawn serve: stdio tools/call roundtrip + HTTP /healthz
 #   make docker-build  # build the container image (also proves the musl build)
@@ -25,13 +28,13 @@
 #   make plan-guard    # fail if plan/ or .clinerules are tracked by git
 #   make yaml-guard    # fail if a workflow is invalid YAML (silently disables CI)
 #   make ci            # plan-guard + check (what CI runs)
-#   make bench         # release perf gate: recall p95 < 150 ms @10k
-#   make bench-100k    # release perf gate: recall p95 < 300 ms @100k
-# ==============================================================================
+# v0.6.0 release proof is split into strict performance targets and a structural
+# report-only closeout. The strict targets remain the source of truth for a
+# pass/fail latency claim.
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-.PHONY: help check fmt lint test test-fast build build-musl bench bench-100k bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 gate-v0.5.0 gate-v0.6.0 plan-guard yaml-guard ci smoke smoke-serve restore-drill soak docker-build docker-smoke
+.PHONY: help check fmt lint test test-fast build build-musl bench bench-report bench-100k bench-100k-report bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 gate-v0.5.0 gate-v0.6.0 plan-guard yaml-guard ci smoke smoke-serve restore-drill soak docker-build docker-smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -198,11 +201,17 @@ eval: ## Offline eval gate: absolute floors + committed baseline drift check (on
 eval-summarize: ## Offline summarize-quality gate — mean ROUGE-L ≥ 0.85 over fixtures/summarize_cases.jsonl (hermetic: MockChat)
 	cargo test --test summarize_quality -- --nocapture
 
-bench: ## Release perf gate: recall p95 < 150 ms @10k memories (roadmap §10)
-	AGOS_BENCH_VECTORS=10000 cargo bench --bench recall_bench
+bench: ## Strict release perf gate: recall p95 < 150 ms @10k (NOT MET is a failure)
+	AGOS_BENCH_VECTORS=10000 AGOS_BENCH_REPORT_ONLY=0 cargo bench --bench recall_bench
 
-bench-100k: ## Release perf gate: recall p95 < 300 ms @100k memories (roadmap §10)
-	AGOS_BENCH_VECTORS=100000 AGOS_BENCH_SAMPLES=20 AGOS_BENCH_ASSERT=1 cargo bench --bench recall_bench
+bench-report: ## Release 10k perf measurement; reports the threshold result without asserting
+	AGOS_BENCH_VECTORS=10000 AGOS_BENCH_REPORT_ONLY=1 cargo bench --bench recall_bench
+
+bench-100k: ## Strict release perf gate: recall p95 < 300 ms @100k (NOT MET is a failure)
+	AGOS_BENCH_VECTORS=100000 AGOS_BENCH_SAMPLES=20 AGOS_BENCH_REPORT_ONLY=0 AGOS_BENCH_ASSERT=1 cargo bench --bench recall_bench
+
+bench-100k-report: ## Release 100k perf measurement; reports the threshold result without asserting
+	AGOS_BENCH_VECTORS=100000 AGOS_BENCH_SAMPLES=20 AGOS_BENCH_REPORT_ONLY=1 cargo bench --bench recall_bench
 
 bench-consolidate: ## Release consolidation bench (0049): summarize quality/speed, dedup, TTL reaper
 	cargo bench --bench consolidate_bench
@@ -241,7 +250,7 @@ gate-v0.5.0: ## v0.5.0 Interfaces gate: fmt + clippy -D + tests + yaml-guard + p
 	$(MAKE) eval-summarize
 	@echo "gate-v0.5.0: OK — perf benches are separate release gates (make bench / make bench-consolidate)"
 
-gate-v0.6.0: ## v0.6.0 proof gate: fmt + clippy -D + tests + guards + release + smoke + smoke-serve + eval + eval-summarize + soak
+gate-v0.6.0: ## v0.6.0 proof gate: structural checks + measured performance reports + soak
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
@@ -252,7 +261,9 @@ gate-v0.6.0: ## v0.6.0 proof gate: fmt + clippy -D + tests + guards + release + 
 	$(MAKE) smoke-serve
 	$(MAKE) eval
 	$(MAKE) eval-summarize
+	$(MAKE) bench-report
+	$(MAKE) bench-100k-report
 	$(MAKE) soak
-	@echo "gate-v0.6.0: OK — perf gates remain explicit (make bench / make bench-100k)"
+	@echo "gate-v0.6.0: structural gate OK; strict performance thresholds remain make bench / make bench-100k and are NOT MET on the published reference host"
 
 ci: plan-guard check ## CI pipeline (offline; no provider access needed)

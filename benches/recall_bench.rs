@@ -63,6 +63,9 @@ fn p95_samples() -> usize {
 }
 
 fn should_assert_p95() -> bool {
+    if std::env::var("AGOS_BENCH_REPORT_ONLY").as_deref() == Ok("1") {
+        return false;
+    }
     !cfg!(debug_assertions) || std::env::var("AGOS_BENCH_ASSERT").as_deref() == Ok("1")
 }
 
@@ -226,6 +229,12 @@ fn bench_recall_stages(criterion: &mut Criterion) {
         );
         println!(
             "p95 gate: PASS (< {ceiling:.0} ms @ {} vectors)",
+            num_vectors()
+        );
+    } else if std::env::var("AGOS_BENCH_REPORT_ONLY").as_deref() == Ok("1") {
+        let result = if p95 < ceiling { "PASS" } else { "NOT MET" };
+        println!(
+            "p95 gate: {result} (report-only: measured {p95:.2}ms, threshold {ceiling:.0}ms @ {} vectors)",
             num_vectors()
         );
     } else {
