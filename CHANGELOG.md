@@ -11,6 +11,10 @@ OpenClaw Markdown ingest, stored eval baseline, and the final structural gate.
 Reference-host 10k/100k latency targets are explicitly **NOT MET**; strict
 performance targets remain available and are not replaced by report-only runs.
 
+- **Complete pin API** — `pin`/`unpin` are now available through the store,
+  `MemoryApi`, MCP, JSON API, and CLI. They synchronise the canonical row,
+  sqlite-vec metadata, and `pins` ledger without changing trust or status; this
+  closes the v0.5 follow-up and makes the planned §8 API surface complete.
 ### Added
 - **v0.6.0 leak proof** — `tests/leak_paths.rs` verifies a hard-purged fact is
   unreachable through recall, fresh snapshots, exports, every discovered SQLite

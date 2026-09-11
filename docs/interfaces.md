@@ -58,7 +58,7 @@ The stdio transport speaks the same MCP protocol as newline-delimited JSON-RPC
 (no SSE, no session headers). The Rust interop proofs are
 `tests/mcp_stdio.rs` (spawns the real binary) and `tests/mcp_http.rs`.
 
-## 2. MCP tools (six, identical on both transports)
+## 2. MCP tools (eight, identical on both transports)
 
 Arguments in **bold** are required. Defaults are applied server-side.
 
@@ -70,6 +70,8 @@ Arguments in **bold** are required. Defaults are applied server-side.
 | `summarize` | `id`, `tier`, `all`, `force` | by id, by tier, or `all=true`; needs a reachable `[llm]` |
 | `explain` | **`id`** | provenance: source, links, ref_count, recall history |
 | `status` | — | `schema_version`, `agent_id`, `counts[]` (**one `{status, count}` bucket per memory status**), `embeddings_cache` |
+| `pin` | **`id`** | idempotent; gives the memory first claim on recall budget without changing trust |
+| `unpin` | **`id`** | removes the pin without changing trust or status |
 
 Every tool answers `{ text, structuredContent }`. Caller mistakes (empty
 `text`, unknown id, bad action) surface as JSON-RPC `INVALID_PARAMS` with an
@@ -90,6 +92,8 @@ field-for-field the MCP tools' `*Input`/outcome shapes.
 | `POST` | `/api/v1/summarize` | `{id? , tier?, all?, force?}` → `{scope, count, summaries[]}` |
 | `GET`  | `/api/v1/explain/{id}` | explain report — the id is a **path** parameter |
 | `GET`  | `/api/v1/status` | `schema_version`, `agent_id`, `counts[]`, `embeddings_cache` |
+| `POST` | `/api/v1/pin/{id}` | `{public_id, pinned}` — pin the memory |
+| `POST` | `/api/v1/unpin/{id}` | `{public_id, pinned}` — remove the pin |
 
 Working recipes for every route: [`docs/examples/remember-recall.sh`](examples/remember-recall.sh)
 (curl) and [`docs/examples/python-httpx.py`](examples/python-httpx.py) (Python).

@@ -164,6 +164,38 @@ fn remember_writes_a_memory_offline_and_it_survives_the_process() {
 }
 
 #[test]
+fn pin_and_unpin_cli_cycle() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("agos-memory.toml"),
+        "db_path = 'smoke.db'\nagent_id = 'default'\n\n[embed]\nprovider = 'none'\n\n[llm]\nbase_url = ''\n",
+    )
+    .unwrap();
+    let (code, _, stderr) = run(dir.path(), &["session", "open"]);
+    assert_eq!(code, 0, "session open failed: {stderr}");
+
+    let (code, stdout, stderr) = run(
+        dir.path(),
+        &["remember", "--text", "A CLI memory used for pin testing."],
+    );
+    assert_eq!(code, 0, "remember failed: {stdout}{stderr}");
+    let id = stdout
+        .lines()
+        .find(|line| line.starts_with("memory:"))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .expect("remember output must contain public_id")
+        .to_string();
+
+    let (code, stdout, stderr) = run(dir.path(), &["pin", &id]);
+    assert_eq!(code, 0, "pin failed: {stdout}{stderr}");
+    assert!(stdout.contains("pinned:"), "{stdout}");
+
+    let (code, stdout, stderr) = run(dir.path(), &["unpin", &id]);
+    assert_eq!(code, 0, "unpin failed: {stdout}{stderr}");
+    assert!(stdout.contains("unpinned:"), "{stdout}");
+}
+
+#[test]
 fn remember_keeps_the_fact_when_the_embedding_provider_is_unreachable() {
     let dir = tempfile::tempdir().unwrap();
     // Port 1 refuses immediately: the provider is unreachable, not slow.

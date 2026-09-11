@@ -866,6 +866,50 @@ impl StoreHandle {
             .await
     }
 
+    /// Set or clear a memory pin in the canonical row, vector metadata, and
+    /// `pins` ledger. Pinning is idempotent and never changes trust or status.
+    pub async fn set_memory_pinned(&self, memory_id: i64, pinned: bool, by: &str) -> Result<bool> {
+        let now = crate::util::SystemClock.now_millis();
+        let by = by.to_string();
+        self.write(move |conn| {
+            let changed = conn.execute(
+                "UPDATE memories SET pinned = ?2, updated_at = ?3 WHERE id = ?1",
+                rusqlite::params![memory_id, pinned as i64, now],
+            )?;
+            if changed == 0 {
+                return Ok(false);
+            }
+
+            // Keep sqlite-vec's metadata mirror in lockstep with the canonical
+            // row. Degraded stores may have no vector row; that is still valid.
+            conn.execute(
+                "UPDATE vec_memories SET pinned = ?2 WHERE rowid = ?1",
+                rusqlite::params![memory_id, pinned as i64],
+            )?;
+            if pinned {
+                conn.execute(
+                    "INSERT INTO pins (memory_id, pinned_at, by) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(memory_id) DO UPDATE SET pinned_at = excluded.pinned_at, by = excluded.by",
+                    rusqlite::params![memory_id, now, &by],
+                )?;
+            } else {
+                conn.execute("DELETE FROM pins WHERE memory_id = ?1", [memory_id])?;
+            }
+            Ok(true)
+        })
+        .await
+    }
+
+    /// Pin a memory. Returns `false` when the internal id does not exist.
+    pub async fn pin_memory(&self, memory_id: i64, by: &str) -> Result<bool> {
+        self.set_memory_pinned(memory_id, true, by).await
+    }
+
+    /// Unpin a memory. Returns `false` when the internal id does not exist.
+    pub async fn unpin_memory(&self, memory_id: i64) -> Result<bool> {
+        self.set_memory_pinned(memory_id, false, "agent").await
+    }
+
     /// Soft-deprecate a memory: sets `status = 'deprecated'`, `deleted_at = now`.
     /// Memory is excluded from recall (hard filter already excludes deprecated).
     /// Recoverable via `restore_memory`.

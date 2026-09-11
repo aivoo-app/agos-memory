@@ -341,6 +341,46 @@ fn remember_recall_roundtrip() {
 }
 
 #[test]
+fn pin_and_unpin_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let token = "pin-secret";
+    let (_child, url, rx) = spawn(dir.path(), Some(token));
+    let _guard = rx;
+    let c = client();
+
+    let rem = c
+        .post(format!("{url}/api/v1/remember"))
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "text": "A fact used to verify the pin API.",
+            "tier": "semantic",
+        }))
+        .send()
+        .unwrap();
+    assert_eq!(rem.status(), 200, "remember failed: {:?}", rem.text());
+    let id = rem.json::<serde_json::Value>().unwrap()["public_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let pin = c
+        .post(format!("{url}/api/v1/pin/{id}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .unwrap();
+    assert_eq!(pin.status(), 200, "pin failed: {:?}", pin.text());
+    assert_eq!(pin.json::<serde_json::Value>().unwrap()["pinned"], true);
+
+    let unpin = c
+        .post(format!("{url}/api/v1/unpin/{id}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .unwrap();
+    assert_eq!(unpin.status(), 200, "unpin failed: {:?}", unpin.text());
+    assert_eq!(unpin.json::<serde_json::Value>().unwrap()["pinned"], false);
+}
+
+#[test]
 fn status_returns_counts() {
     let dir = tempfile::tempdir().unwrap();
     let token = "status-secret";
@@ -468,8 +508,10 @@ fn route_coverage() {
         // return 404 when the target id does not exist — that's a normal business
         // response, not a missing-route signal. Probe them with a plausible id and
         // accept 404.
-        let accept_404 =
-            path.starts_with("/api/v1/forget/") || path.starts_with("/api/v1/explain/");
+        let accept_404 = path.starts_with("/api/v1/forget/")
+            || path.starts_with("/api/v1/explain/")
+            || path.starts_with("/api/v1/pin/")
+            || path.starts_with("/api/v1/unpin/");
         assert!(
             code != 404 || accept_404,
             "{method} {path} returned 404 — route not registered in the router?"
@@ -487,6 +529,8 @@ fn route_coverage() {
         "/api/v1/recall",
         "/api/v1/summarize",
         "/api/v1/forget/m_000000000000000000000001",
+        "/api/v1/pin/m_000000000000000000000001",
+        "/api/v1/unpin/m_000000000000000000000001",
         "/api/v1/explain/m_000000000000000000000001",
         "/api/v1/status",
         // Things that should *not* exist:

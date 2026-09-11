@@ -165,7 +165,7 @@ fn stdio_handshake_init() {
 }
 
 #[test]
-fn stdio_lists_all_six_tools() {
+fn stdio_lists_all_eight_tools() {
     let dir = tempfile::tempdir().unwrap();
     let mut session = Session::spawn(dir.path());
     session.call(1, INIT);
@@ -184,10 +184,12 @@ fn stdio_lists_all_six_tools() {
         "summarize",
         "explain",
         "status",
+        "pin",
+        "unpin",
     ] {
         assert!(names.contains(&want), "missing {want}: {names:?}");
     }
-    assert_eq!(names.len(), 6, "unexpected tools: {names:?}");
+    assert_eq!(names.len(), 8, "unexpected tools: {names:?}");
 
     session.shutdown();
 }

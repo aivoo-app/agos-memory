@@ -1,6 +1,6 @@
 //! JSON HTTP routes for the memory API (issue 0002).
 //!
-//! The six routes mirror the MCP tools one-to-one — same `*Input` argument
+//! The eight routes mirror the MCP tools one-to-one — same `*Input` argument
 //! structs, same outcome DTOs — delegating to one call site each
 //! ([`crate::api::MemoryApi]). Failed calls render the CLI error taxonomy as
 //! `{error, code}` via [`crate::server::api`], so operators see the same
@@ -18,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 
 use crate::api::{
-    ExplainInput, ForgetInput, MemoryApi, RecallInput, RememberInput, SummarizeInput,
+    ExplainInput, ForgetInput, MemoryApi, PinInput, RecallInput, RememberInput, SummarizeInput,
 };
 use crate::server::api::{ApiError, render_error, render_result};
 
@@ -36,7 +36,7 @@ struct ForgetBody {
     pub reason: Option<String>,
 }
 
-/// Build the six memory routes (without state or auth — those are layered by
+/// Build the eight memory routes (without state or auth — those are layered by
 /// [`crate::server::http::router`]).
 pub fn routes() -> Router {
     Router::new()
@@ -44,6 +44,8 @@ pub fn routes() -> Router {
         .route("/recall", post(recall))
         .route("/summarize", post(summarize))
         .route("/forget/{id}", post(forget))
+        .route("/pin/{id}", post(pin))
+        .route("/unpin/{id}", post(unpin))
         .route("/explain/{id}", get(explain))
         .route("/status", get(status))
 }
@@ -78,6 +80,14 @@ async fn forget(
         reason: body.reason,
     };
     render_result(api.forget(&args).await)
+}
+
+async fn pin(Extension(api): Extension<MemoryApi>, Path(id): Path<String>) -> Response {
+    render_result(api.pin(&PinInput { id }).await)
+}
+
+async fn unpin(Extension(api): Extension<MemoryApi>, Path(id): Path<String>) -> Response {
+    render_result(api.unpin(&PinInput { id }).await)
 }
 
 async fn explain(Extension(api): Extension<MemoryApi>, Path(id): Path<String>) -> Response {

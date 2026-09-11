@@ -43,6 +43,7 @@ use the normal API write path from a client while the server is running.
 ## Other write commands
 
 - `remember --text ... [--tier ...] [--kind ...] [--source-kind ...]`
+- `pin <id>` / `unpin <id>` (idempotent; changes retrieval priority only)
 - `session open|append|close|idle-close`
 - `import [--dry-run] <jsonl>`
 

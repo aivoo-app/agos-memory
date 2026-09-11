@@ -1,7 +1,7 @@
 //! ## Transport-neutral memory API (issue 0002)
 //!
-//! `MemoryApi` is the single implementation of the six memory operations —
-//! `remember`, `recall`, `forget`, `summarize`, `explain`, `status`. Both
+//! `MemoryApi` is the single implementation of the eight memory operations —
+//! `remember`, `recall`, `forget`, `pin`, `unpin`, `summarize`, `explain`, `status`. Both
 //! transports call it:
 //!
 //! - the **MCP** tool handlers (`src/mcp`) map each `Parameters<*Input>` →
@@ -90,6 +90,22 @@ pub struct ForgetInput {
     pub to_version: Option<i64>,
     /// Reason recorded in the forget audit ledger.
     pub reason: Option<String>,
+}
+
+/// `pin` / `unpin` — change only retrieval priority for an existing memory.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PinInput {
+    /// Public id of the memory to pin or unpin.
+    pub id: String,
+}
+
+/// Result of `pin` or `unpin`.
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
+pub struct PinOutcome {
+    /// Public id of the affected memory.
+    pub public_id: String,
+    /// Current pin state after the operation.
+    pub pinned: bool,
 }
 
 /// `summarize` — on-demand summarization by id or by tier.
@@ -473,6 +489,39 @@ impl MemoryApi {
         }
     }
 
+    /// Pin a memory so it claims retrieval budget before non-pinned hits.
+    /// Pinning is idempotent and does not change provenance or trust.
+    pub async fn pin(&self, args: &PinInput) -> Result<PinOutcome> {
+        let row = self
+            .store
+            .get_memory(args.id.clone())
+            .await?
+            .ok_or_else(|| Error::MemoryNotFound {
+                id: args.id.clone(),
+            })?;
+        self.store.pin_memory(row.id, "agent").await?;
+        Ok(PinOutcome {
+            public_id: row.public_id,
+            pinned: true,
+        })
+    }
+
+    /// Remove a memory pin without changing its trust or status.
+    pub async fn unpin(&self, args: &PinInput) -> Result<PinOutcome> {
+        let row = self
+            .store
+            .get_memory(args.id.clone())
+            .await?
+            .ok_or_else(|| Error::MemoryNotFound {
+                id: args.id.clone(),
+            })?;
+        self.store.unpin_memory(row.id).await?;
+        Ok(PinOutcome {
+            public_id: row.public_id,
+            pinned: false,
+        })
+    }
+
     /// Summarize memories (on-demand, by id or tier).
     pub async fn summarize(&self, args: &SummarizeInput) -> Result<SummarizeResult> {
         if args.force == Some(true) && args.id.is_none() {
@@ -766,6 +815,97 @@ mod tests {
 
         let st = api.status().await.unwrap();
         assert!(st.counts.iter().any(|c| c.status == "active"));
+    }
+
+    #[tokio::test]
+    async fn pin_and_unpin_update_state_without_changing_trust() {
+        let (api, _dir) = api().await;
+        let rem = api
+            .remember(&RememberInput {
+                text: "A durable fact used for pin testing.".into(),
+                tier: Some("semantic".into()),
+                kind: None,
+                source_kind: Some("user".into()),
+                confidence: None,
+            })
+            .await
+            .unwrap();
+        let public_id = rem.public_id;
+
+        let pinned = api
+            .pin(&PinInput {
+                id: public_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(pinned.pinned);
+        let pin_id = public_id.clone();
+        let (memory_pin, vector_pin, pin_rows): (i64, i64, i64) = api
+            .store()
+            .read(move |conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT pinned FROM memories WHERE public_id = ?1",
+                        [&pin_id],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT pinned FROM vec_memories WHERE rowid = (SELECT id FROM memories WHERE public_id = ?1)",
+                        [&pin_id],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM pins WHERE memory_id = (SELECT id FROM memories WHERE public_id = ?1)",
+                        [&pin_id],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .await
+            .unwrap();
+        assert_eq!((memory_pin, vector_pin, pin_rows), (1, 1, 1));
+
+        let unpinned = api
+            .unpin(&PinInput {
+                id: public_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(!unpinned.pinned);
+        let unpin_id = public_id.clone();
+        let (memory_pin, vector_pin, pin_rows): (i64, i64, i64) = api
+            .store()
+            .read(move |conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT pinned FROM memories WHERE public_id = ?1",
+                        [&unpin_id],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT pinned FROM vec_memories WHERE rowid = (SELECT id FROM memories WHERE public_id = ?1)",
+                        [&unpin_id],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM pins WHERE memory_id = (SELECT id FROM memories WHERE public_id = ?1)",
+                        [&unpin_id],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .await
+            .unwrap();
+        assert_eq!((memory_pin, vector_pin, pin_rows), (0, 0, 0));
+        assert_eq!(
+            api.store()
+                .get_memory(public_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .trust,
+            "trusted"
+        );
     }
 
     #[test]

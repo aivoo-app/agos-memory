@@ -198,6 +198,13 @@ pub struct ExplainArgs {
     pub id: String,
 }
 
+/// `pin` / `unpin` — change retrieval priority without changing provenance.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PinArgs {
+    /// Public id of the memory to pin or unpin.
+    pub id: String,
+}
+
 // ---------------------------------------------------------------------------
 // Tool implementations
 // ---------------------------------------------------------------------------
@@ -415,6 +422,58 @@ impl AgosServer {
                 ));
             }
         };
+        Ok(reply(text, structured))
+    }
+
+    /// Pin a memory so it receives first claim on the recall budget.
+    #[tool(
+        name = "pin",
+        annotations(
+            title = "Pin a memory",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn pin(
+        &self,
+        Parameters(args): Parameters<PinArgs>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let outcome = self
+            .memory_api()
+            .pin(&crate::api::PinInput { id: args.id })
+            .await
+            .map_err(proto)?;
+        let text = format!("pinned: {}", outcome.public_id);
+        let structured = serde_json::to_value(outcome)
+            .map_err(|e| proto(crate::error::Error::Storage(e.to_string())))?;
+        Ok(reply(text, structured))
+    }
+
+    /// Remove a memory pin. This never changes its trust or status.
+    #[tool(
+        name = "unpin",
+        annotations(
+            title = "Unpin a memory",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn unpin(
+        &self,
+        Parameters(args): Parameters<PinArgs>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let outcome = self
+            .memory_api()
+            .unpin(&crate::api::PinInput { id: args.id })
+            .await
+            .map_err(proto)?;
+        let text = format!("unpinned: {}", outcome.public_id);
+        let structured = serde_json::to_value(outcome)
+            .map_err(|e| proto(crate::error::Error::Storage(e.to_string())))?;
         Ok(reply(text, structured))
     }
 
@@ -718,6 +777,16 @@ mod tests {
                     .explain(Parameters(serde_json::from_value(val).unwrap()))
                     .await
             }
+            "pin" => {
+                server
+                    .pin(Parameters(serde_json::from_value(val).unwrap()))
+                    .await
+            }
+            "unpin" => {
+                server
+                    .unpin(Parameters(serde_json::from_value(val).unwrap()))
+                    .await
+            }
             "status" => server.status().await,
             _ => panic!("unknown tool: {name}"),
         }
@@ -748,7 +817,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn router_lists_all_six_tools() {
+    async fn router_lists_all_eight_tools() {
         let (_server, _dir) = test_server().await;
         let tools = AgosServer::tool_router().list_all();
         let names: Vec<String> = tools.into_iter().map(|t| t.name.to_string()).collect();
@@ -759,13 +828,15 @@ mod tests {
             "summarize",
             "explain",
             "status",
+            "pin",
+            "unpin",
         ] {
             assert!(
                 names.contains(&want.to_string()),
                 "missing {want}: {names:?}"
             );
         }
-        assert_eq!(names.len(), 6, "unexpected tools: {names:?}");
+        assert_eq!(names.len(), 8, "unexpected tools: {names:?}");
     }
 
     #[tokio::test]
@@ -930,6 +1001,26 @@ mod tests {
                 .any(|h| h.public_id == pid && h.injected()),
             "purged memory must not be injected"
         );
+    }
+
+    #[tokio::test]
+    async fn pin_and_unpin_cycle() {
+        let (server, _dir) = test_server().await;
+        let resp = call(
+            &server,
+            "remember",
+            serde_json::json!({"text": "A fact that should be pinned.", "tier": "semantic"}),
+        )
+        .await;
+        let pid = structured(&resp)["public_id"].as_str().unwrap().to_string();
+
+        let pinned = call(&server, "pin", serde_json::json!({"id": pid})).await;
+        assert_eq!(structured(&pinned)["pinned"], true);
+        let row = server.store.get_memory(pid.clone()).await.unwrap().unwrap();
+        assert_eq!(row.trust, "trusted");
+
+        let unpinned = call(&server, "unpin", serde_json::json!({"id": pid})).await;
+        assert_eq!(structured(&unpinned)["pinned"], false);
     }
 
     #[tokio::test]

@@ -23,8 +23,8 @@ this repo.
    store with `DbLocked` (D18).
 
 2. **MCP is the tool surface; one transport-neutral API is the authority** —
-   the six MCP tools (`remember`, `recall`, `forget`, `summarize`, `explain`,
-   `status`) are thin wrappers: each maps its typed input to
+   the eight MCP tools (`remember`, `recall`, `forget`, `pin`, `unpin`,
+   `summarize`, `explain`, `status`) are thin wrappers: each maps its typed input to
    `src/api::MemoryApi` and formats the returned JSON as both structured
    content and fenced text (`src/mcp/mod.rs`). The JSON routes call the *same*
    `MemoryApi` (`src/server/json.rs`), so the business rules — budget guard,
@@ -64,8 +64,8 @@ this repo.
 - The JSON API and MCP share the `/healthz` probe, the auth header semantics,
   and the exit-code ↔ HTTP-status ↔ JSON `code` error taxonomy documented in
   `docs/interfaces.md`.
-- A future concern can expose a new surface (e.g. a gRPC or 0009-follow-up
-  `pin` tool) on the same router without new auth or lifecycle machinery.
+- A future concern can expose a new surface (for example a gRPC client)
+  on the same router without new auth or lifecycle machinery.
 - Alpine-over-distroless is a small surface-area increase (BusyBox if needed)
   traded for an actually-verifiable healthcheck; revisit if a distroless base
   gains a usable tool.

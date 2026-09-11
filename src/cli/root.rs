@@ -102,6 +102,16 @@ pub enum Command {
         #[arg(long, default_value_t = 0.8)]
         confidence: f64,
     },
+    /// Pin a memory so it receives first claim on the recall budget.
+    Pin {
+        /// Public id of the memory to pin.
+        id: String,
+    },
+    /// Remove a memory pin without changing trust or status.
+    Unpin {
+        /// Public id of the memory to unpin.
+        id: String,
+    },
     /// Manage sessions and turns.
     Session {
         #[command(subcommand)]
@@ -321,6 +331,8 @@ pub async fn run(cli: Cli) -> Result<()> {
         } => {
             super::remember::run_remember(&cfg, &text, &tier, &kind, &source_kind, confidence).await
         }
+        Command::Pin { id } => pin_cmd(&cfg, id, true).await,
+        Command::Unpin { id } => pin_cmd(&cfg, id, false).await,
         Command::Session { cmd } => super::remember::run_session(&cfg, &cmd).await,
         Command::Recall {
             text,
@@ -727,6 +739,23 @@ async fn eval_cmd(
 // `defaults` is re-exported for binary consumers; keep the import referenced.
 #[allow(unused_imports)]
 use defaults as _defaults;
+
+/// `pin` / `unpin` CLI commands — update retrieval priority only.
+async fn pin_cmd(cfg: &Config, id: String, pinned: bool) -> Result<()> {
+    let store = crate::storage::StoreHandle::open(cfg, defaults::READ_POOL_SIZE).await?;
+    let row = store
+        .get_memory(id.clone())
+        .await?
+        .ok_or_else(|| crate::error::Error::InvalidInput(format!("memory {id} not found")))?;
+    if pinned {
+        store.pin_memory(row.id, "agent").await?;
+        println!("pinned: {}", row.public_id);
+    } else {
+        store.unpin_memory(row.id).await?;
+        println!("unpinned: {}", row.public_id);
+    }
+    Ok(())
+}
 
 /// `forget` CLI command — manage memory lifecycle.
 async fn forget_cmd(cfg: &Config, cmd: ForgetCmd) -> Result<()> {
