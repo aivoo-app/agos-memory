@@ -2,10 +2,6 @@
 target/
 .git/
 .gitignore
-plan/
-.clinerules
-.agent/
-.kilo/
 bench/
 tests/
 fixtures/

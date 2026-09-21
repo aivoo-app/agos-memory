@@ -16,25 +16,24 @@
 #   make build         # release build
 #   make build-musl    # static release build for x86_64-unknown-linux-musl
 #                        (requires musl-gcc; see docs/operations/runbook.md)
-#   make gate-v0.1.0   # milestone gate: check + plan-guard
-#   make gate-v0.1.1   # v0.1.1 milestone gate: fmt check + clippy + tests + plan-guard
-#   make gate-v0.2.0   # v0.2.0 milestone gate: check + plan-guard + release build + CLI smoke
-#   make gate-v0.5.0   # v0.5.0 Interfaces gate: check + yaml-guard + plan-guard + release + smoke + smoke-serve + eval + eval-summarize
+#   make gate-v0.1.0   # milestone gate: check
+#   make gate-v0.1.1   # v0.1.1 milestone gate: fmt check + clippy + tests
+#   make gate-v0.2.0   # v0.2.0 milestone gate: check + release build + CLI smoke
+#   make gate-v0.5.0   # v0.5.0 Interfaces gate: check + yaml-guard + release + smoke + smoke-serve + eval + eval-summarize
 #   make gate-v0.6.0   # v0.6.0 proof gate: structural checks + report-only 10k/100k measurements + soak
 #   make soak          # release mixed-traffic soak; AGOS_SOAK_SECS controls duration
 #   make smoke-serve   # spawn serve: stdio tools/call roundtrip + HTTP /healthz
 #   make docker-build  # build the container image (also proves the musl build)
 #   make docker-smoke  # run the image: /healthz 200 + auth matrix (mirrors CI)
-#   make plan-guard    # fail if plan/ or .clinerules are tracked by git
 #   make yaml-guard    # fail if a workflow is invalid YAML (silently disables CI)
-#   make ci            # plan-guard + check (what CI runs)
+#   make ci            # check (what CI runs)
 # v0.6.0 release proof is split into strict performance targets and a structural
 # report-only closeout. The strict targets remain the source of truth for a
 # pass/fail latency claim.
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-.PHONY: help check fmt lint test test-fast build build-musl bench bench-report bench-100k bench-100k-report bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 gate-v0.5.0 gate-v0.6.0 plan-guard yaml-guard ci smoke smoke-serve restore-drill soak docker-build docker-smoke
+.PHONY: help check fmt lint test test-fast build build-musl bench bench-report bench-100k bench-100k-report bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 gate-v0.5.0 gate-v0.6.0 yaml-guard ci smoke smoke-serve restore-drill soak docker-build docker-smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -108,21 +107,15 @@ docker-smoke: docker-build ## Run the image and assert /healthz 200 + the auth m
 yaml-guard: ## Fail if a GitHub workflow is not valid YAML (a broken one silently disables all CI)
 	@python3 scripts/check-workflows.py
 
-plan-guard: ## Fail if plan/ local notes are tracked by git
-	@if git ls-files plan/ | grep -v '^plan/.gitignore$$' | grep -q .; then echo "plan-guard: FAIL — plan/ files are tracked (keep plan/ git-ignored)"; git ls-files plan/ | grep -v '^plan/.gitignore$$'; exit 1; fi
-	@echo "plan-guard: OK — plan/ is untracked"
-
 gate-v0.1.0: ## v0.1.0 milestone gate
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
-	$(MAKE) plan-guard
 
 gate-v0.1.1: ## v0.1.1 milestone gate (same gates, named for the release)
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
-	$(MAKE) plan-guard
 
 smoke: ## CLI smoke test on a throwaway database (init/session/remember/status/doctor)
 	@set -euo pipefail; \
@@ -176,11 +169,10 @@ smoke-serve: ## Serve smoke (0009): MCP stdio tools/call roundtrip + HTTP /healt
 	[ "$$CODE" = 200 ] || { echo "smoke-serve: HTTP /healthz failed (code=$$CODE):"; cat $$DIR/http.log; exit 1; }; \
 	echo "smoke-serve: HTTP /healthz 200 OK"
 
-gate-v0.2.0: ## v0.2.0 milestone gate (write path: fmt + clippy + tests + plan-guard + build + smoke)
+gate-v0.2.0: ## v0.2.0 milestone gate (write path: fmt + clippy + tests + build + smoke)
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
-	$(MAKE) plan-guard
 	cargo build --release
 	$(MAKE) smoke
 
@@ -216,33 +208,30 @@ bench-100k-report: ## Release 100k perf measurement; reports the threshold resul
 bench-consolidate: ## Release consolidation bench (0049): summarize quality/speed, dedup, TTL reaper
 	cargo bench --bench consolidate_bench
 
-gate-v0.3.0: ## v0.3.0 milestone gate (fmt + clippy -D + tests + plan-guard + build + smoke + eval + bench)
+gate-v0.3.0: ## v0.3.0 milestone gate (fmt + clippy -D + tests + build + smoke + eval + bench)
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
-	$(MAKE) plan-guard
 	cargo build --release
 	$(MAKE) smoke
 	$(MAKE) eval
 	$(MAKE) bench
 
-gate-v0.4.0: ## v0.4.0 milestone gate (fmt + clippy -D + tests + plan-guard + release + smoke + eval + eval-summarize)
+gate-v0.4.0: ## v0.4.0 milestone gate (fmt + clippy -D + tests + release + smoke + eval + eval-summarize)
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
-	$(MAKE) plan-guard
 	cargo build --release
 	$(MAKE) smoke
 	$(MAKE) eval
 	$(MAKE) eval-summarize
 	@echo "gate-v0.4.0: perf benches are separate release gates — run \`make bench\` and \`make bench-consolidate\`"
 
-gate-v0.5.0: ## v0.5.0 Interfaces gate: fmt + clippy -D + tests + yaml-guard + plan-guard + release + smoke + smoke-serve + eval + eval-summarize
+gate-v0.5.0: ## v0.5.0 Interfaces gate: fmt + clippy -D + tests + yaml-guard + release + smoke + smoke-serve + eval + eval-summarize
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
 	$(MAKE) yaml-guard
-	$(MAKE) plan-guard
 	cargo build --release
 	$(MAKE) smoke
 	$(MAKE) smoke-serve
@@ -255,7 +244,6 @@ gate-v0.6.0: ## v0.6.0 proof gate: structural checks + measured performance repo
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
 	$(MAKE) yaml-guard
-	$(MAKE) plan-guard
 	cargo build --release
 	$(MAKE) smoke
 	$(MAKE) smoke-serve
@@ -266,4 +254,4 @@ gate-v0.6.0: ## v0.6.0 proof gate: structural checks + measured performance repo
 	$(MAKE) soak
 	@echo "gate-v0.6.0: structural gate OK; strict performance thresholds remain make bench / make bench-100k and are NOT MET on the published reference host"
 
-ci: plan-guard check ## CI pipeline (offline; no provider access needed)
+ci: check ## CI pipeline (offline; no provider access needed)

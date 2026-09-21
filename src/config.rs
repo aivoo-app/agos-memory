@@ -141,8 +141,7 @@ impl Default for BudgetConfig {
 /// Recall (read-path) tuning — v0.3.0.
 ///
 /// Controls hybrid retrieval, rerank weights, per-tier half-life decay, token
-/// packing, and the trust policy. See plan/DECISIONS.md (D24–D29) and
-/// `docs/recall.md`.
+/// packing, and the trust policy. See `docs/recall.md`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RecallConfig {

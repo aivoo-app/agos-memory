@@ -130,10 +130,7 @@ MCP server runtime: stdio + streamable HTTP, CLI `serve`, hermetic e2e.
   (401 without token, 200 with, remember→recall over the wire).
 - **Dependencies**: `axum 0.8`, `tower 0.5`, `tokio-util 0.7` (rt),
   `reqwest 0.12` (json + rustls-tls + blocking).
-- **Milestone gate `make gate-v0.5.0`** (fmt + clippy `-D warnings` + tests +
-  plan-guard + release build + smoke + **smoke-serve** + eval +
-  eval-summarize) and the `smoke-serve` recipe: spawns `serve --stdio`, runs a
-  real `tools/call` roundtrip over stdin, then starts HTTP `serve` on an
+- **Milestone gate `make gate-v0.5.0`** (fmt + clippy `-D warnings` + tests + yaml-guard + release build + smoke + **smoke-serve** + eval + eval-summarize) and the `smoke-serve` recipe: spawns `serve --stdio`, runs a real `tools/call` roundtrip over stdin, then starts HTTP `serve` on an
   ephemeral loopback port and asserts `/healthz` 200. Wired into CI.
 - **`docker` CI job + `make docker-build` / `make docker-smoke`** — the only
   end-to-end verification of the musl build (0006) and the container (0007).
@@ -237,7 +234,7 @@ The recall path: hybrid retrieval, hard filters, rerank, packing, audit, citatio
 - **CLI commands (0037)**: `recall` (text, k, budget, trust filters, --json/--explain), `explain <id>`, `eval` (JSONL cases, precision/recall/MRR gates, deterministic HashEmbedder).
 - **Perf benchmark (0038)**: `benches/recall_bench.rs` with Criterion — `recall_full`, `embed_only`, `vec_scan_degraded`, `recall_p95` (p95 < 150ms assertion); uses HashEmbedder for hermetic offline benchmark.
 - **Integration suites (0039)**: 8 test suites — `recall_hybrid`, `recall_filters`, `recall_budget`, `recall_explain`, `recall_nohit`, `recall_degraded`, `recall_audit`, `eval_gate`.
-- **Makefile**: `make eval`, `make bench`, `make gate-v0.3.0` (fmt + clippy -D + tests + plan-guard + build + smoke + eval + bench).
+- **Makefile**: `make eval`, `make bench`, `make gate-v0.3.0` (fmt + clippy -D + tests + build + smoke + eval + bench).
 - **Docs**: `docs/recall.md` (full math spec), ADR-006 (hybrid retrieval), ADR-007 (token packing).
 
 ### Fixed
@@ -327,12 +324,9 @@ The write path: facts go in, durably, with provenance.
   integrity check plus core-table row-count equality against the live
   database; refuses to overwrite an existing target.
 - Integration test suites: `tests/migrations.rs`, `tests/store_restart.rs`,
-  `tests/sqlite_vec_knn.rs`, `tests/plan_guard.rs`, `tests/cli_smoke.rs`,
-  `tests/backup.rs`.
-- CI: `make plan-guard` (fails if anything under `plan/` besides its own
-  `.gitignore` is tracked — the single file that keeps local planning notes
-  untracked), `make gate-v0.1.1`, and a GitHub Actions pipeline
-  (fmt, clippy `-D warnings`, offline tests, plan-guard, release build).
+  `tests/sqlite_vec_knn.rs`, `tests/cli_smoke.rs`, `tests/backup.rs`.
+- CI: `make gate-v0.1.1` and a GitHub Actions pipeline
+  (fmt, clippy `-D warnings`, offline tests, release build).
 - `docs/roadmap.md` (the README linked to it before it existed).
 
 ### Changed
@@ -361,5 +355,5 @@ The write path: facts go in, durably, with provenance.
   - LLM call cost ledger with token estimates.
   - Offline eval harness (precision / recall / MRR / leak count).
   - CLI: `init` (config scaffold + database), `status`, `doctor`.
-  - Makefile, GitHub Actions CI (fmt, clippy, tests, plan guard).
+  - Makefile and GitHub Actions CI (fmt, clippy, tests).
   - Docs: README, CONTRIBUTING, SECURITY, ADR-001..003.

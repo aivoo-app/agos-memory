@@ -54,7 +54,7 @@ tempfile = "3"
 default = []
 # Opt-in local ONNX embeddings (fastembed). Disabled by default: the target
 # hosts are RAM-constrained (a Hermes box OOM-killed at 908 MB).
-# Wiring tracked in plan/issues for v0.2.x; the Embedder trait is in place.
+# Reserved for a future local ONNX provider; the Embedder trait is in place.
 local-embed = []
 
 [dev-dependencies]

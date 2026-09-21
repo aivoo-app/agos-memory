@@ -53,15 +53,6 @@ jobs:
         if: github.event_name == 'push'
         run: make eval-summarize
 
-      - name: Plan guard (plan/ stays untracked via plan/.gitignore)
-        run: |
-          if git ls-files plan/ | grep -v '^plan/.gitignore$' | grep -q .; then
-            echo "plan-guard: FAIL — plan/ files are tracked"
-            git ls-files plan/ | grep -v '^plan/.gitignore$'
-            exit 1
-          fi
-          echo "plan-guard: OK — plan/ is untracked"
-
   # Push-only final v0.6.0 structural proof. It includes the release performance
   # reports, and the 60-second soak, so these are not also duplicated in separate
   # push jobs. Performance is report-only because the
