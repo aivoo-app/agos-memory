@@ -84,6 +84,14 @@ MEM_ID=$(echo "$REMEMBERED" | jq -r '.public_id')
 echo "==> remembered: $MEM_ID"
 echo
 
+# Pin/unpin are idempotent and do not change trust or status.
+echo "--- POST /api/v1/pin/{id} ---"
+api POST "/api/v1/pin/$MEM_ID" | jq .
+echo
+echo "--- POST /api/v1/unpin/{id} ---"
+api POST "/api/v1/unpin/$MEM_ID" | jq .
+echo
+
 echo "--- POST /api/v1/remember (defaults: tier=episodic, kind=fact) ---"
 api POST /api/v1/remember '{
       "text": "Prefers dark mode across all tools.",

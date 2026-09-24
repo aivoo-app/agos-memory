@@ -132,7 +132,18 @@ def main() -> int:
     print(f"==> schema v{status['schema_version']}, {len(status['counts'])} status bucket(s)")
     print()
 
-    # 5. Forget (soft deprecate, then restore)
+    # 5. Pin/unpin — retrieval priority only; trust and status stay unchanged.
+    print("--- POST /api/v1/pin/{id} ---")
+    pinned = ok("POST", f"/api/v1/pin/{mem_id}")
+    print(pinned)
+    assert pinned["pinned"] is True, pinned
+    print("--- POST /api/v1/unpin/{id} ---")
+    unpinned = ok("POST", f"/api/v1/unpin/{mem_id}")
+    print(unpinned)
+    assert unpinned["pinned"] is False, unpinned
+    print()
+
+    # 6. Forget (soft deprecate, then restore)
     print("--- POST /api/v1/forget/{id} (soft) ---")
     softened = ok(
         "POST",
@@ -149,7 +160,7 @@ def main() -> int:
     assert restored["action"] == "restore", restored
     print()
 
-    # 6. Summarize — runs through the configured chat model (`[llm]`). Without a
+    # 7. Summarize — runs through the configured chat model (`[llm]`). Without a
     #    reachable endpoint the route answers 502 `{"error": ..., "code": "LLM"}`,
     #    which is reported here instead of crashing the example.
     print("--- POST /api/v1/summarize (by id) ---")

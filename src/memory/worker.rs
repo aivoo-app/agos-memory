@@ -165,6 +165,7 @@ async fn run_extract_job(
         ));
     };
 
+    super::check_session_budget(store, config, Some(sid)).await?;
     extract_session(store, sid, llm.as_ref(), &*embedder, None).await?;
     Ok(())
 }

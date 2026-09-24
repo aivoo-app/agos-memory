@@ -39,6 +39,18 @@ pub enum Command {
     },
     /// Show database health: schema, memory counts.
     Status,
+    /// Report provider-call tokens, estimated USD, and recall budget rows.
+    Cost {
+        /// Session public id (default: all sessions).
+        #[arg(long)]
+        session: Option<String>,
+        /// Time window such as 30m, 24h, 7d, or 2w (default: all time).
+        #[arg(long)]
+        since: Option<String>,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Deeper diagnostics: sqlite-vec, FTS5, pragmas, integrity.
     Doctor,
     /// Write a verified snapshot copy of the database.
@@ -64,6 +76,14 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Ingest OpenClaw `MEMORY.md` and `memory/YYYY-MM-DD.md` files.
+    Ingest {
+        /// OpenClaw directory or one Markdown file.
+        path: std::path::PathBuf,
+        /// Parse and report without writing memories.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Store one fact as a durable memory (redacted, embedded, deduped).
     Remember {
         /// The fact text.
@@ -75,12 +95,22 @@ pub enum Command {
         /// Memory kind (default fact).
         #[arg(long, default_value = "fact")]
         kind: String,
-        /// Provenance: user/agent/tool/file/web/import (tool/web → untrusted).
+        /// Provenance: user/agent/tool/file/web/import; tool/web/import/file → untrusted.
         #[arg(long, default_value = "user")]
         source_kind: String,
         /// Extraction confidence 0..1 (below threshold → pending).
         #[arg(long, default_value_t = 0.8)]
         confidence: f64,
+    },
+    /// Pin a memory so it receives first claim on the recall budget.
+    Pin {
+        /// Public id of the memory to pin.
+        id: String,
+    },
+    /// Remove a memory pin without changing trust or status.
+    Unpin {
+        /// Public id of the memory to unpin.
+        id: String,
     },
     /// Manage sessions and turns.
     Session {
@@ -138,6 +168,9 @@ pub enum Command {
         /// Emit Metrics as JSON.
         #[arg(long)]
         json: bool,
+        /// Compare against a committed eval baseline JSON artifact.
+        #[arg(long)]
+        baseline: Option<std::path::PathBuf>,
     },
     /// Manage memory lifecycle: deprecate, restore, purge, audit.
     Forget {
@@ -277,12 +310,18 @@ pub async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Init { force } => super::init::run(&cfg, force).await,
         Command::Status => status(&cfg).await,
+        Command::Cost {
+            session,
+            since,
+            json,
+        } => super::cost::run(&cfg, session, since, json).await,
         Command::Doctor => doctor(&cfg).await,
         Command::Backup { out } => super::backup::run(&cfg, &out).await,
         Command::Export { tier, out } => {
             super::export::run_export(&cfg, tier.as_deref(), out.as_deref()).await
         }
         Command::Import { file, dry_run } => super::export::run_import(&cfg, &file, dry_run).await,
+        Command::Ingest { path, dry_run } => super::ingest::run(&cfg, &path, dry_run).await,
         Command::Remember {
             text,
             tier,
@@ -292,6 +331,8 @@ pub async fn run(cli: Cli) -> Result<()> {
         } => {
             super::remember::run_remember(&cfg, &text, &tier, &kind, &source_kind, confidence).await
         }
+        Command::Pin { id } => pin_cmd(&cfg, id, true).await,
+        Command::Unpin { id } => pin_cmd(&cfg, id, false).await,
         Command::Session { cmd } => super::remember::run_session(&cfg, &cmd).await,
         Command::Recall {
             text,
@@ -325,7 +366,19 @@ pub async fn run(cli: Cli) -> Result<()> {
             min_recall,
             min_mrr,
             json,
-        } => eval_cmd(&cfg, file, min_precision, min_recall, min_mrr, json).await,
+            baseline,
+        } => {
+            eval_cmd(
+                &cfg,
+                file,
+                min_precision,
+                min_recall,
+                min_mrr,
+                json,
+                baseline,
+            )
+            .await
+        }
         Command::Forget { cmd } => forget_cmd(&cfg, cmd).await,
         Command::Summarize {
             id,
@@ -605,8 +658,9 @@ async fn eval_cmd(
     min_recall: f64,
     min_mrr: f64,
     json: bool,
+    baseline: Option<std::path::PathBuf>,
 ) -> Result<()> {
-    use crate::eval::{load_cases, run, validate_cases};
+    use crate::eval::{EvalBaseline, load_cases, run, validate_cases};
 
     let cases = load_cases(&file)?;
     validate_cases(&cases)?;
@@ -624,6 +678,8 @@ async fn eval_cmd(
         println!("cases:     {}", metrics.cases);
     }
 
+    // Absolute floors are evaluated before any baseline update. An explicit
+    // update must never persist a run that already fails the product gate.
     if let Err(reason) = metrics.check(min_precision, min_recall, min_mrr) {
         for outcome in eval.imperfect() {
             eprintln!(
@@ -639,12 +695,67 @@ async fn eval_cmd(
         return Err(crate::error::Error::InvalidInput(reason));
     }
 
+    let update_baseline = std::env::var("AGOS_EVAL_UPDATE_BASELINE")
+        .ok()
+        .is_some_and(|value| value == "1");
+    let baseline = baseline
+        .map(|path| {
+            if update_baseline {
+                let release =
+                    std::env::var("AGOS_EVAL_RELEASE").unwrap_or_else(|_| "working-tree".into());
+                let git_commit =
+                    std::env::var("AGOS_EVAL_GIT_COMMIT").unwrap_or_else(|_| "unknown".into());
+                let artifact = EvalBaseline::new(release, git_commit, metrics.clone());
+                artifact.write(&path)?;
+                eprintln!("eval baseline updated: {}", path.display());
+                Ok(artifact)
+            } else {
+                EvalBaseline::load(&path)
+            }
+        })
+        .transpose()?;
+
+    if let Some(baseline) = &baseline
+        && let Err(reason) = metrics.check_baseline(baseline)
+    {
+        eprintln!(
+            "baseline: precision={:.6} recall={:.6} mrr={:.6} leaks={} cases={}",
+            baseline.metrics.precision,
+            baseline.metrics.recall,
+            baseline.metrics.mrr,
+            baseline.metrics.leaks,
+            baseline.metrics.cases
+        );
+        eprintln!(
+            "measured: precision={:.6} recall={:.6} mrr={:.6} leaks={} cases={}",
+            metrics.precision, metrics.recall, metrics.mrr, metrics.leaks, metrics.cases
+        );
+        return Err(crate::error::Error::InvalidInput(reason));
+    }
+
     Ok(())
 }
 
 // `defaults` is re-exported for binary consumers; keep the import referenced.
 #[allow(unused_imports)]
 use defaults as _defaults;
+
+/// `pin` / `unpin` CLI commands — update retrieval priority only.
+async fn pin_cmd(cfg: &Config, id: String, pinned: bool) -> Result<()> {
+    let store = crate::storage::StoreHandle::open(cfg, defaults::READ_POOL_SIZE).await?;
+    let row = store
+        .get_memory(id.clone())
+        .await?
+        .ok_or_else(|| crate::error::Error::InvalidInput(format!("memory {id} not found")))?;
+    if pinned {
+        store.pin_memory(row.id, "agent").await?;
+        println!("pinned: {}", row.public_id);
+    } else {
+        store.unpin_memory(row.id).await?;
+        println!("unpinned: {}", row.public_id);
+    }
+    Ok(())
+}
 
 /// `forget` CLI command — manage memory lifecycle.
 async fn forget_cmd(cfg: &Config, cmd: ForgetCmd) -> Result<()> {

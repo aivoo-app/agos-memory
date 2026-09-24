@@ -2,7 +2,6 @@
 use crate::error::{Error, Result};
 use crate::memory::persist;
 use crate::memory::sessions;
-use crate::util::{HeuristicCounter, TokenCounter};
 use serde::Deserialize;
 /// Extractor version recorded on every memory row this pipeline creates.
 pub const EXTRACTOR_VERSION: &str = "extract-v1";
@@ -157,16 +156,22 @@ pub async fn extract_session(
     let started = std::time::Instant::now();
     let response = chat.complete(&prompt).await?;
     let report = parse_output(&response)?;
+    let entry = crate::observe::ledger::estimated_entry_for_session(
+        crate::observe::ledger::Purpose::Extract,
+        Some(session_id),
+        chat.model(),
+        &prompt,
+        &response,
+        started.elapsed().as_millis() as u64,
+        true,
+    );
     if let Some(sink) = &ledger {
-        sink(crate::observe::ledger::LedgerEntry {
-            purpose: crate::observe::ledger::Purpose::Extract,
-            model: chat.model().to_string(),
-            prompt_tokens: TokenCounter::count(&HeuristicCounter::new(), &prompt),
-            completion_tokens: TokenCounter::count(&HeuristicCounter::new(), &response),
-            latency_ms: started.elapsed().as_millis() as u64,
-            ok: true,
-            cost_usd_est: 0.0,
-        });
+        sink(entry.clone());
+    }
+    if let Err(e) = crate::observe::ledger::record_entry(store, &entry).await {
+        // The provider call already happened. Do not retry/bill it by failing
+        // extraction; make the missing audit row visible to operators.
+        tracing::warn!(session_id, error = %e, "failed to record extraction cost ledger entry");
     }
     let mut inserted = 0usize;
     let mut max_seq = upto;

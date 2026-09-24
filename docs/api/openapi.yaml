@@ -11,7 +11,7 @@ info:
     Every route except `/healthz` requires a Bearer token when one is
     configured for the server. Loopback binds without a token are allowed
     for local development (same rule as the MCP transport).
-  version: "0.5.0"
+  version: "0.6.0"
   contact:
     name: AGOS Memory
 servers:
@@ -165,6 +165,76 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApiError"
+
+  /api/v1/pin/{id}:
+    post:
+      tags: [memory]
+      summary: Pin a memory
+      description: |
+        Make an existing memory claim retrieval budget first. Pinning is idempotent
+        and does not change trust, status, or provenance.
+      operationId: pin
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: public_id of the memory
+          schema:
+            type: string
+      responses:
+        "200":
+          description: pin outcome
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PinOutcome"
+        "404":
+          description: memory not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "500":
+          description: store error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/v1/unpin/{id}:
+    post:
+      tags: [memory]
+      summary: Unpin a memory
+      description: |
+        Remove a memory pin without changing trust, status, or provenance.
+      operationId: unpin
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: public_id of the memory
+          schema:
+            type: string
+      responses:
+        "200":
+          description: unpin outcome
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PinOutcome"
+        "404":
+          description: memory not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "500":
+          description: store error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
 
   /api/v1/summarize:
     post:
@@ -444,6 +514,17 @@ components:
           description: |
             The resulting status column value after a hard purge.
             Absent on soft/restore/rollback outcomes (kept off the wire).
+
+    PinOutcome:
+      type: object
+      required: [public_id, pinned]
+      properties:
+        public_id:
+          type: string
+          description: Stable public identifier for the affected memory.
+        pinned:
+          type: boolean
+          description: Current pin state after the operation.
 
     SummarizeInput:
       type: object

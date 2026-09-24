@@ -2,8 +2,10 @@
 
 agos-memory is a self-hosted agent memory manager. One SQLite database per
 agent, reached through MCP (stdio + Streamable HTTP) or the JSON API — shipped
-in v0.5.0. This document describes the foundation (v0.1.0), the committed shape
-of what follows, and how the interface layer (v0.5.0) sits on top.
+in v0.5.0. v0.6.0 closes the proof/hardening milestone with cost, leak,
+restore, eval, poisoning, soak, and OpenClaw ingest evidence. This document
+describes the foundation (v0.1.0), the committed shape of what follows, and
+how the interface layer (v0.5.0) sits on top.
 
 ## Milestones
 
@@ -14,7 +16,7 @@ of what follows, and how the interface layer (v0.5.0) sits on top.
 | v0.3.0  | Recall path: hybrid FTS5 + vector retrieval, hard filters, rerank, packing |
 | v0.4.0  | Consolidation & forgetting: summaries, versioning, verified deletion |
 | v0.5.0  | Interfaces: MCP (stdio + Streamable HTTP), JSON API, integrations |
-| v0.6.0  | Proof: load tests, cost report, leak tests, backups |
+| v0.6.0 | **shipped** — load tests, cost report, leak tests, backups, eval, poisoning, soak, OpenClaw ingest; all §10 evidence published; reference-host 10k/100k latency targets **NOT MET** |
 
 ## Module map
 
@@ -55,7 +57,9 @@ src/
 CLI commands: `init`, `status`, `doctor`, `backup --out <file>`,
 `remember --text <t>`, `session open|append|close|idle-close`,
 `serve [--stdio] [--bind] [--token]` (v0.5.0), `export|import` (JSONL
-migration), `forget` (v0.4.0). Full interface reference:
+migration), `ingest <dir-or-file>` (OpenClaw Markdown, v0.6.0),
+`cost [--session <id>] [--since <dur>] [--json]` (v0.6.0),
+`forget` (v0.4.0). Full interface reference:
 [interfaces.md](interfaces.md).
 
 ## Concurrency model
@@ -97,9 +101,10 @@ transaction where it matters:
    `password=`/`api_key=`-style pairs become `[REDACTED]` *before* the text is
    embedded or stored, so a secret never reaches the provider, the vector
    table, or `memories.text`.
-2. **Trust** — provenance decides trust: `tool`, `web` and `import` sources
-   produce `trust = 'untrusted'` memories; the default recall policy never
-   injects them ([ADR-001] lineage, D13).
+2. **Trust** — provenance decides trust: `tool`, `web`, `import`, and `file`
+   sources produce `trust = 'untrusted'` memories; only `user` and `agent` are
+   trusted. The default recall policy never injects them ([ADR-001] lineage,
+   D13).
 3. **Status** — candidates below
    `[memory] pending_threshold` (default 0.4) are stored as
    `status = 'pending'` rather than `active`.
@@ -109,7 +114,9 @@ transaction where it matters:
 5. **Dedup** — a KNN lookup over `vec_memories` in the same tier compares
    cosine similarity. Above `[memory] dedup_threshold` (default 0.92) the
    existing row wins: `ref_count` is bumped, `last_referenced_at` refreshed,
-   a `refines` link is added, and `dedup_cluster_id` is set. Otherwise a new
+   a `refines` link is added, and `dedup_cluster_id` is set. Trust is merged
+   conservatively: an untrusted collision downgrades a trusted survivor, while
+   a trusted collision cannot upgrade an untrusted survivor. Otherwise a new
    row is inserted together with its `memory_versions` v1 row and its vector.
 6. **Record** — extraction is a durable job (`extract`) with an idempotency
    key, `max_attempts`, exponential backoff, and a `jobs_dead` DLQ the
@@ -143,6 +150,11 @@ transaction where it matters:
   Packaging: `make build-musl` static binary + a Docker image. Full reference
   in [interfaces.md](interfaces.md); rationale in
   [ADR-009](adr/009-interfaces-transports-auth.md).
+- Performance proof (v0.6.0, **in flight**): the release 10k and 100k hybrid
+  gates are measured and **NOT MET** on the reference host; the 100k miss opens
+  a bounded pgvector/PostgreSQL-FTS prototype but not an immediate migration.
+  Reproducible numbers are in [proof.md](proof.md); decision and falsifiable
+  migration triggers are in [ADR-010](adr/010-pgvector-escape-hatch.md).
 
 [ADR-001]: adr/001-why-rust-memory-store.md
 [ADR-002]: adr/002-embedding-pluggable-and-pinned.md

@@ -68,6 +68,54 @@ fn migrated_file_database_has_the_full_table_set() {
 }
 
 #[test]
+fn schema_v5_adds_session_attribution_without_rewriting_old_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_file(&dir.path().join("v4.db"));
+
+    // Materialize v1..v4 without applying v5.
+    for (index, sql) in schema::MIGRATIONS.iter().take(4).enumerate() {
+        conn.execute_batch(sql).unwrap();
+        conn.pragma_update(None, "user_version", (index + 1) as i64)
+            .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO sessions(public_id, agent_id, started_at, status)
+         VALUES ('old-session', 'default', 1, 'closed')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO llm_calls
+         (purpose, model, prompt_tokens, completion_tokens, total_tokens,
+          latency_ms, ok, cost_usd_est, created_at)
+         VALUES ('eval', 'old-model', 10, 5, 15, 7, 1, 0.1, 1)",
+        [],
+    )
+    .unwrap();
+
+    schema::migrate(&mut conn).unwrap();
+    assert_eq!(schema::user_version(&conn).unwrap(), 5);
+    let columns = conn
+        .prepare("PRAGMA table_info(llm_calls)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(columns.iter().any(|column| column == "session_id"));
+
+    let (tokens, session_id): (i64, Option<i64>) = conn
+        .query_row(
+            "SELECT total_tokens, session_id FROM llm_calls",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(tokens, 15);
+    assert_eq!(session_id, None, "pre-v5 rows must remain unattributed");
+}
+
+#[test]
 fn database_from_a_newer_binary_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("future.db");

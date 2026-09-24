@@ -100,7 +100,7 @@ every later request — the raw sequence is spelled out in
 
 ## 4. Tool surface
 
-Six tools, identical over both transports (issue 0001):
+Eight tools, identical over both transports (issue 0001 plus the pin follow-up):
 
 | Tool        | Arguments (required in **bold**)                    | When to call                                                  |
 |-------------|-----------------------------------------------------|----------------------------------------------------------------|
@@ -110,6 +110,8 @@ Six tools, identical over both transports (issue 0001):
 | `summarize` | `id`, `tier`, `all`, `force`                          | On session close, or on demand for long histories             |
 | `explain`   | **`id`**                                             | When the agent must show its work (provenance, citations)      |
 | `status`    | —                                                    | Dashboards / health checks                                     |
+| `pin`       | **`id`**                                             | Make an explicit memory win retrieval-budget priority          |
+| `unpin`     | **`id`**                                             | Remove that priority without changing trust or status          |
 
 Every tool returns one text part (the human-readable rendering) plus
 `structuredContent` with the machine-readable payload. Caller mistakes come
@@ -153,10 +155,11 @@ Consequences for Hermes deployments:
 ## 7. Trust policy
 
 Recall defaults to **Strict** (D29): only `trusted`/`system` memories are
-eligible. `remember` assigns trust from `source_kind` — `tool`, `web`, and
-`import` are forced to `untrusted`; `user`, `agent`, and `file` are trusted.
-Untrusted memories are fenced data: they are returned only when the caller
-passes `include_untrusted: true`, and they are never re-labelled as trusted.
+eligible. `remember` assigns trust from `source_kind` — `tool`, `web`,
+`import`, and `file` are forced to `untrusted`; only `user` and `agent` are
+trusted. Untrusted memories are fenced data: they are returned only when the
+caller passes `include_untrusted: true`, and they are never re-labelled as
+trusted.
 
 Two more opt-ins matter for Hermes:
 

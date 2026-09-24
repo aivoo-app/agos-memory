@@ -117,7 +117,21 @@ Default half-lives (D24):
 - `semantic`: ∞ (no decay)
 - `procedural`: ∞
 
-**Ordering:** descending `rerank_score`, tie-broken by `public_id`.
+**Ordering:** descending `rerank_score`, tie-broken by `public_id`. Pinned rows use decay `1.0` (age-immune) and are packed first.
+
+**Aged-fact proof:** `tests/aged_recall.rs` uses the real write path and
+`recall_with_clock` with `FakeClock` to prove age changes rank, not reachability:
+
+| Age | Old score | Fresh score | Old decay | Result |
+|---:|---:|---:|---:|---|
+| 90 days | 0.727852 | 0.870161 | 0.051271 | old returned second |
+| 180 days | 0.720556 | 0.870161 | 0.002629 | old returned second |
+| 365 days | 0.720162 | 0.870161 | 0.000006 | old returned second |
+
+The old fact remains above `min_score=0.35` at every point. A separate pinned
+fixture scores `0.875000` at both day 0 and day 365, with decay `1.0` at both
+points. The normal `recall()` API remains backed by `SystemClock`; the additive
+`recall_with_clock()` seam exists for deterministic callers and tests.
 
 **Cuts:** after rerank, keep top `k`, then apply `min_score` threshold (D26). `min_score` default: `0.35`.
 
@@ -142,6 +156,33 @@ After rerank cuts, items are packed into a token budget (`budget_tokens`, defaul
 4. **Ceiling invariant** — running total `tokens_used ≤ budget_tokens` enforced on every placement.
 
 **Output:** `RecallReport` with `hits` in injection order (pinned first, then by rerank score within tier), each hit tagged with `Placement` (`Full`, `Summary`, `Dropped(TierBudget|TotalBudget|Unresolved)`).
+
+### 4.1 History-size flatness proof
+
+Packing is budget-driven: increasing the eligible candidate/history count may
+change *which* equal-cost items win, but it must not increase
+`tokens_used`. `tests/token_flatness.rs` runs the real recall path with the same
+query text, 1,500-token budget, and ~200-token semantic items, while varying the
+history and candidate count:
+
+```sh
+cargo test --test token_flatness -- --nocapture --test-threads=1
+```
+
+| Corpus / candidates | Answer tokens | `token_ledger.tokens_used` | Injected items |
+|---:|---:|---:|---:|
+| 32 | 1,407 | 1,407 | 7 |
+| 128 | 1,407 | 1,407 | 7 |
+| 512 | 1,407 | 1,407 | 7 |
+
+Measured range ratio: `(1407 - 1407) / 1407 = 0.0000` (**0.00%**, target
+<5%). The suite independently checks report accounting against the audit row and
+rejects empty answers, so zero tokens cannot produce a vacuous pass. The sizes
+remain in the normal test budget; the release performance gate owns 100k scale.
+
+Mutation verification temporarily increased the packer ceiling by one token per
+candidate. The 128-history case then injected 1,608 tokens and failed the
+1,500-token invariant, proving the suite catches candidate-count-scaled packing.
 
 ---
 
@@ -173,6 +214,29 @@ RecallReport {
 | `Fenced` | `trusted`, `system`, `untrusted` | Retrieved but rendered in fence: `<memory trust="untrusted">...</memory>` |
 
 **Pinning does not launder provenance** — a pinned untrusted memory is still excluded under `Strict`.
+
+### Trust invariants across mutation routes
+
+`trust` is derived from `source_kind` on every write: `tool`, `web`, `import`, and
+`file` are always `untrusted`; only `user` and `agent` are trusted. This includes
+agent-written Markdown files: they may contain fetched or tool-derived text, so
+the safe default is fenced data rather than instructions. The value is then **monotonic** across later operations: a trusted edit,
+dedup collision, import conflict, rollback, or summary cannot upgrade an
+existing untrusted row. A web/tool/import operation can conservatively
+ downgrade a trusted survivor. The canonical SQLite row is authoritative;
+`vec_memories.trust` is updated alongside it, and the post-leg Rust filter
+fails closed if metadata drifts.
+
+The six poisoning routes covered by `tests/poisoning.rs` are:
+
+| Route | Invariant | Result |
+|---|---|---|
+| Dedup | Existing row merges the worse trust; provenance is not relabelled | mitigated |
+| Version / rollback | New versions and rollback cannot upgrade untrusted rows | mitigated |
+| Import | Imported `trust` is ignored and re-derived from provenance; conflicts use the same merge | mitigated |
+| Summarization | Summary is stored on its source row, so it inherits source trust | mitigated |
+| Pinning | Pin changes ordering only; Strict still excludes untrusted rows | mitigated |
+| Fenced recall | `--include-untrusted` renders `trust="untrusted"` data blocks | mitigated |
 
 ---
 

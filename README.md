@@ -4,11 +4,10 @@ Self-hosted agent memory manager: durable, tiered, citation-backed memory for
 AI agents. One SQLite database per agent; MCP + HTTP interfaces; OpenAI-
 compatible embeddings and LLMs via [agos-proxy].
 
-Status: **v0.5.0 — Interfaces** (MCP stdio + Streamable HTTP, axum JSON API +
-bearer auth, JSONL export/import, musl static build, Docker). Underlying core:
-write path v0.2.0, recall v0.3.0, consolidation & forgetting v0.4.0 (all
-shipped). See `docs/interfaces.md`, `docs/architecture.md`, and
-`docs/roadmap.md`.
+Status: **v0.6.0 — Proof & hardening shipped** (interfaces from v0.5.0 plus leak,
+restore, cost, poisoning, eval, soak, and OpenClaw ingest hardening). The release
+publishes measured evidence for all §10 claims; the reference-host latency
+targets remain explicitly **NOT MET** and are not presented as passing.
 
 ## Why
 
@@ -17,12 +16,18 @@ dangerous to trust. agos-memory gives an agent persistent, auditable memory:
 
 - **Tiers** — working (current session), episodic (events), semantic
   (durable facts), procedural (trigger -> behavior rules).
-- **Provenance & trust** — every memory records where it came from; untrusted
+- **OpenClaw ingest** — `agos-memory ingest <dir-or-file> [--dry-run]` parses
+  `MEMORY.md` and `memory/YYYY-MM-DD.md`, preserves `file:line` provenance, is
+  idempotent, redacts secrets, records daily items as sessions/turns, and treats
+  agent-authored `file` memories as untrusted by default.
+- **Provenance and trust** — every memory records where it came from; untrusted
   memories are never injected by default.
 - **Citations** — recalled memories link back to the turns they came from.
 - **Forgetting** — deprecation by default; verified hard delete with
   tombstones and a leak test across every read path.
-- **Cost ledger** — every LLM/embed call is recorded with estimated cost.
+- **Cost ledger** — provider calls are recorded with estimated cost; run
+  `agos-memory cost [--session …] [--since …] [--json]` for tokens, USD, and
+  per-session ceiling state.
 
 ## Quick start
 
@@ -30,6 +35,7 @@ dangerous to trust. agos-memory gives an agent persistent, auditable memory:
 cargo build --release
 ./target/release/agos-memory init
 ./target/release/agos-memory status
+./target/release/agos-memory cost --since 7d
 ./target/release/agos-memory doctor
 ```
 

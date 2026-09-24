@@ -125,7 +125,8 @@ impl Default for SessionConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BudgetConfig {
-    /// Max LLM tokens chargeable to one session before recall degrades.
+    /// Max LLM tokens chargeable to one session before further work is refused.
+    /// Zero disables the ceiling.
     pub max_tokens_per_session: u64,
 }
 
@@ -140,8 +141,7 @@ impl Default for BudgetConfig {
 /// Recall (read-path) tuning — v0.3.0.
 ///
 /// Controls hybrid retrieval, rerank weights, per-tier half-life decay, token
-/// packing, and the trust policy. See plan/DECISIONS.md (D24–D29) and
-/// `docs/recall.md`.
+/// packing, and the trust policy. See `docs/recall.md`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RecallConfig {
@@ -529,11 +529,6 @@ impl Config {
         if self.session.idle_minutes == 0 {
             return Err(Error::Config("session.idle_minutes must be > 0".into()));
         }
-        if self.budget.max_tokens_per_session == 0 {
-            return Err(Error::Config(
-                "budget.max_tokens_per_session must be > 0".into(),
-            ));
-        }
         if !(0.0..=1.0).contains(&self.memory.pending_threshold) {
             return Err(Error::Config(
                 "memory.pending_threshold must be between 0.0 and 1.0".into(),
@@ -633,6 +628,13 @@ mod tests {
         assert!(cfg.validate().is_err());
 
         cfg.server.token = "a- reasonably long token value".into();
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn zero_budget_means_unlimited() {
+        let mut cfg = Config::default();
+        cfg.budget.max_tokens_per_session = 0;
         cfg.validate().unwrap();
     }
 

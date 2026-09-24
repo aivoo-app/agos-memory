@@ -1,0 +1,14 @@
+{
+  "format": "agos-memory-eval-baseline",
+  "release": "v0.6.0",
+  "git_commit": "728ee3a",
+  "corpus_size": 20,
+  "tolerance": 0.01,
+  "metrics": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "mrr": 1.0,
+    "leaks": 0,
+    "cases": 20
+  }
+}

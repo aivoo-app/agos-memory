@@ -71,10 +71,8 @@ pub enum Error {
     #[error("llm error: {0}")]
     Llm(String),
 
-    /// The per-session token cost ceiling was breached; recall degrades to keyword-only.
-    #[error(
-        "session token ceiling exceeded ({used} > {ceiling}); degrading to keyword-only recall"
-    )]
+    /// The session's attributed provider-call ceiling was reached.
+    #[error("session token ceiling reached ({used} >= {ceiling}); refusing more provider work")]
     BudgetExceeded {
         /// Tokens used so far this session.
         used: u64,

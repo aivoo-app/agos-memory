@@ -111,6 +111,27 @@ pub struct NewMemory {
     pub source_kind: String,
 }
 
+/// Derive trust from provenance. The source vocabulary is validated by the
+/// SQLite schema; unknown values are treated conservatively as untrusted.
+pub(crate) fn trust_for_source_kind(source_kind: &str) -> &'static str {
+    match source_kind {
+        "user" | "agent" => "trusted",
+        _ => "untrusted",
+    }
+}
+
+/// Merge provenance into an existing trust value without allowing an
+/// untrusted source to be upgraded by a later trusted operation.
+pub(crate) fn trust_after_source(current: &str, source_kind: &str) -> &'static str {
+    if current == "untrusted" || trust_for_source_kind(source_kind) == "untrusted" {
+        "untrusted"
+    } else if current == "system" {
+        "system"
+    } else {
+        "trusted"
+    }
+}
+
 /// Result of a verified snapshot ([`StoreHandle::snapshot_to`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnapshotReport {
@@ -274,9 +295,15 @@ impl std::fmt::Debug for Store {
 }
 
 impl StoreHandle {
-    /// Agent ID this store was opened for.
+    /// Borrow the agent ID this store was opened for.
     pub fn agent_id(&self) -> &str {
         &self.inner.agent_id
+    }
+
+    /// Whether the single-writer actor is still healthy and responsive to
+    /// scheduled work. This is read-only and does not submit a database job.
+    pub fn writer_is_healthy(&self) -> bool {
+        self.inner.writer.is_healthy()
     }
 
     /// Open (or create) the database at `cfg.db_path`, migrate, register
@@ -450,6 +477,7 @@ impl StoreHandle {
         let kind = m.kind.clone();
         let text = m.text.clone();
         let source_kind = m.source_kind.clone();
+        let trust = trust_for_source_kind(&source_kind);
 
         let now = crate::util::SystemClock.now_millis();
         let pid = public_id.clone();
@@ -459,7 +487,7 @@ impl StoreHandle {
                 conn.execute(
                     "INSERT INTO memories (public_id, agent_id, tier, kind, text, text_hash,
                                            status, trust, source_kind, created_at, updated_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', 'trusted', ?7, ?8, ?9)",
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10)",
                     rusqlite::params![
                         &pid,
                         agent_id,
@@ -467,6 +495,7 @@ impl StoreHandle {
                         kind,
                         text,
                         text_hash,
+                        trust,
                         source_kind,
                         now,
                         now
@@ -487,7 +516,7 @@ impl StoreHandle {
                     kind: m.kind.clone(),
                     text: m.text.clone(),
                     status: "active".into(),
-                    trust: "trusted".into(),
+                    trust: trust.into(),
                     created_at: now,
                     updated_at: now,
                     summary_text: None,
@@ -497,6 +526,32 @@ impl StoreHandle {
             .await?;
 
         Ok(row)
+    }
+
+    /// Attach a source reference to an existing memory.
+    ///
+    /// Ingest adapters use this after the normal redacted/embedded write path
+    /// returns. The reference is provenance metadata only; it never changes the
+    /// text or trust value.
+    pub async fn set_source_ref(&self, memory_id: i64, source_ref: &str) -> Result<()> {
+        if source_ref.trim().is_empty() || source_ref.len() > 1024 {
+            return Err(Error::InvalidInput(
+                "source_ref must be 1..=1024 bytes".into(),
+            ));
+        }
+        let source_ref = source_ref.to_string();
+        self.write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET source_ref = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![
+                    &source_ref,
+                    crate::util::SystemClock.now_millis(),
+                    memory_id
+                ],
+            )?;
+            Ok(())
+        })
+        .await
     }
 
     /// Count memories grouped by status.
@@ -649,10 +704,26 @@ impl StoreHandle {
         change_reason: Option<&str>,
         created_by: Option<&str>,
     ) -> Result<MemoryRow> {
+        self.update_memory_with_provenance(memory_id, new_text, None, change_reason, created_by)
+            .await
+    }
+
+    /// Update text while optionally re-deriving trust from the update's
+    /// provenance. Trust is monotonic: an untrusted row never becomes trusted
+    /// merely because a later edit is attributed to a trusted source.
+    pub async fn update_memory_with_provenance(
+        &self,
+        memory_id: i64,
+        new_text: &str,
+        source_kind: Option<&str>,
+        change_reason: Option<&str>,
+        created_by: Option<&str>,
+    ) -> Result<MemoryRow> {
         let new_text_owned = new_text.to_string();
         let new_hash = crate::util::sha256_hex(&new_text_owned);
         let reason = change_reason.map(|s| s.to_string());
         let by = created_by.map(|s| s.to_string());
+        let source_kind = source_kind.map(|s| s.to_string());
 
         self.write(move |conn| {
             // Get current version number
@@ -706,10 +777,37 @@ impl StoreHandle {
                 ],
             )?;
 
-            // Update the memories row
+            // Preserve or conservatively downgrade trust; never upgrade an
+            // existing untrusted row. A provenance-bearing update also keeps
+            // the sqlite-vec metadata mirror aligned with the canonical row.
+            let (current_trust, current_source_kind): (String, String) = conn.query_row(
+                "SELECT trust, source_kind FROM memories WHERE id = ?1",
+                [memory_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let trust = source_kind
+                .as_deref()
+                .map(|kind| trust_after_source(&current_trust, kind))
+                .unwrap_or_else(|| current_trust.as_str());
+            let source_kind = match source_kind.as_deref() {
+                Some(_) if current_trust == "untrusted" => current_source_kind.as_str(),
+                Some(kind) => kind,
+                None => current_source_kind.as_str(),
+            };
+            let trust_code = match trust {
+                "trusted" => 0,
+                "untrusted" => 1,
+                "system" => 2,
+                _ => unreachable!(),
+            };
             conn.execute(
-                "UPDATE memories SET text = ?1, text_hash = ?2, updated_at = ?3 WHERE id = ?4",
-                rusqlite::params![&new_text_owned, &new_hash, now, memory_id],
+                "UPDATE memories SET text = ?1, text_hash = ?2, trust = ?3,
+                 source_kind = ?4, updated_at = ?5 WHERE id = ?6",
+                rusqlite::params![&new_text_owned, &new_hash, trust, source_kind, now, memory_id],
+            )?;
+            conn.execute(
+                "UPDATE vec_memories SET trust = ?1 WHERE rowid = ?2",
+                rusqlite::params![trust_code, memory_id],
             )?;
 
             // Fetch the updated row
@@ -766,6 +864,50 @@ impl StoreHandle {
 
         self.update_memory(memory_id, &new_text, Some(&reason), created_by)
             .await
+    }
+
+    /// Set or clear a memory pin in the canonical row, vector metadata, and
+    /// `pins` ledger. Pinning is idempotent and never changes trust or status.
+    pub async fn set_memory_pinned(&self, memory_id: i64, pinned: bool, by: &str) -> Result<bool> {
+        let now = crate::util::SystemClock.now_millis();
+        let by = by.to_string();
+        self.write(move |conn| {
+            let changed = conn.execute(
+                "UPDATE memories SET pinned = ?2, updated_at = ?3 WHERE id = ?1",
+                rusqlite::params![memory_id, pinned as i64, now],
+            )?;
+            if changed == 0 {
+                return Ok(false);
+            }
+
+            // Keep sqlite-vec's metadata mirror in lockstep with the canonical
+            // row. Degraded stores may have no vector row; that is still valid.
+            conn.execute(
+                "UPDATE vec_memories SET pinned = ?2 WHERE rowid = ?1",
+                rusqlite::params![memory_id, pinned as i64],
+            )?;
+            if pinned {
+                conn.execute(
+                    "INSERT INTO pins (memory_id, pinned_at, by) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(memory_id) DO UPDATE SET pinned_at = excluded.pinned_at, by = excluded.by",
+                    rusqlite::params![memory_id, now, &by],
+                )?;
+            } else {
+                conn.execute("DELETE FROM pins WHERE memory_id = ?1", [memory_id])?;
+            }
+            Ok(true)
+        })
+        .await
+    }
+
+    /// Pin a memory. Returns `false` when the internal id does not exist.
+    pub async fn pin_memory(&self, memory_id: i64, by: &str) -> Result<bool> {
+        self.set_memory_pinned(memory_id, true, by).await
+    }
+
+    /// Unpin a memory. Returns `false` when the internal id does not exist.
+    pub async fn unpin_memory(&self, memory_id: i64) -> Result<bool> {
+        self.set_memory_pinned(memory_id, false, "agent").await
     }
 
     /// Soft-deprecate a memory: sets `status = 'deprecated'`, `deleted_at = now`.

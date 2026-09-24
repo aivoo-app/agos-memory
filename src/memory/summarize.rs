@@ -69,7 +69,7 @@ pub async fn summarize_by_id(
     }
 
     // Generate summary via LLM
-    let summary_text = generate_summary(llm, &memory.text).await?;
+    let summary_text = generate_summary(store, llm, &memory.text).await?;
     let summary_tokens = count_tokens(&summary_text);
     let summary_text_for_update = summary_text.clone();
 
@@ -160,7 +160,7 @@ pub async fn summarize_tier(
 
     let mut reports = Vec::new();
     for memory in memories {
-        let summary_text = generate_summary(llm, &memory.text).await?;
+        let summary_text = generate_summary(store, llm, &memory.text).await?;
         let summary_tokens = count_tokens(&summary_text);
         let summary_text_for_update = summary_text.clone();
 
@@ -193,10 +193,26 @@ pub async fn summarize_tier(
     Ok(reports)
 }
 
-/// Generate a summary using the LLM.
-async fn generate_summary(llm: &Arc<dyn ChatClient>, text: &str) -> Result<String> {
+/// Generate a summary using the LLM and record its estimated cost.
+async fn generate_summary(
+    store: &StoreHandle,
+    llm: &Arc<dyn ChatClient>,
+    text: &str,
+) -> Result<String> {
     let prompt = format!("{}\n\nText to summarize:\n{}", SUMMARIZATION_PROMPT, text);
+    let started = std::time::Instant::now();
     let response = llm.complete(&prompt).await?;
+    let entry = crate::observe::ledger::estimated_entry(
+        crate::observe::ledger::Purpose::Summarize,
+        llm.model(),
+        &prompt,
+        &response,
+        started.elapsed().as_millis() as u64,
+        true,
+    );
+    if let Err(e) = crate::observe::ledger::record_entry(store, &entry).await {
+        tracing::warn!(error = %e, "failed to record summarization cost ledger entry");
+    }
     Ok(response.trim().to_string())
 }
 

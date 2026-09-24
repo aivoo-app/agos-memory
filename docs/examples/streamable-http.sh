@@ -130,7 +130,7 @@ echo "==> http $CODE"
 echo
 
 # ---------------------------------------------------------------------------
-# 4. tools/list — the six-tool surface
+# 4. tools/list — the eight-tool surface
 # ---------------------------------------------------------------------------
 echo "--- tools/list ---"
 post tools_list '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'

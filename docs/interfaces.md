@@ -1,8 +1,8 @@
 # Interfaces — transports, tools, routes, auth, errors
 
-The complete interface reference for agos-memory v0.5.0: how clients connect,
-what they can call, and how failures are reported on each surface. Three
-normative/verified companions live alongside this page:
+The complete agos-memory v0.6.0 interface reference describes what clients
+can call and how failures are reported on each surface. Three normative/verified
+companions live alongside this page:
 
 - [`docs/api/openapi.yaml`](api/openapi.yaml) — normative JSON API schemas
   (route-coverage tested in `tests/http_api.rs`, issue 0002).
@@ -58,7 +58,7 @@ The stdio transport speaks the same MCP protocol as newline-delimited JSON-RPC
 (no SSE, no session headers). The Rust interop proofs are
 `tests/mcp_stdio.rs` (spawns the real binary) and `tests/mcp_http.rs`.
 
-## 2. MCP tools (six, identical on both transports)
+## 2. MCP tools (eight, identical on both transports)
 
 Arguments in **bold** are required. Defaults are applied server-side.
 
@@ -70,6 +70,8 @@ Arguments in **bold** are required. Defaults are applied server-side.
 | `summarize` | `id`, `tier`, `all`, `force` | by id, by tier, or `all=true`; needs a reachable `[llm]` |
 | `explain` | **`id`** | provenance: source, links, ref_count, recall history |
 | `status` | — | `schema_version`, `agent_id`, `counts[]` (**one `{status, count}` bucket per memory status**), `embeddings_cache` |
+| `pin` | **`id`** | idempotent; gives the memory first claim on recall budget without changing trust |
+| `unpin` | **`id`** | removes the pin without changing trust or status |
 
 Every tool answers `{ text, structuredContent }`. Caller mistakes (empty
 `text`, unknown id, bad action) surface as JSON-RPC `INVALID_PARAMS` with an
@@ -90,6 +92,8 @@ field-for-field the MCP tools' `*Input`/outcome shapes.
 | `POST` | `/api/v1/summarize` | `{id? , tier?, all?, force?}` → `{scope, count, summaries[]}` |
 | `GET`  | `/api/v1/explain/{id}` | explain report — the id is a **path** parameter |
 | `GET`  | `/api/v1/status` | `schema_version`, `agent_id`, `counts[]`, `embeddings_cache` |
+| `POST` | `/api/v1/pin/{id}` | `{public_id, pinned}` — pin the memory |
+| `POST` | `/api/v1/unpin/{id}` | `{public_id, pinned}` — remove the pin |
 
 Working recipes for every route: [`docs/examples/remember-recall.sh`](examples/remember-recall.sh)
 (curl) and [`docs/examples/python-httpx.py`](examples/python-httpx.py) (Python).
@@ -146,17 +150,19 @@ Two distinct ceilings:
 
 - **`budget_tokens` per recall** — packing places hits within it; the report
   states `tokens_used` (always `<= budget_tokens`, D25).
-- **`[budget] max_tokens_per_session`** — write-path ceiling (0 = unlimited).
-  Once the session ledger has spent more than the ceiling, `remember` refuses
-  with `BudgetExceeded` (exit 8 / HTTP 429 / JSON-RPC `INVALID_PARAMS`) on all
-  three surfaces (CLI, MCP, JSON API).
+- **`[budget] max_tokens_per_session`** — attributed provider-token ceiling
+  (0 = unlimited). At or above the ceiling, further work for that session
+  returns `BudgetExceeded` (exit 8 / HTTP 429 / MCP `INVALID_PARAMS`). Only
+  ledger rows with a real `session_id` are charged; the extractor enforces it
+  before the LLM call. Run `agos-memory cost --session <public-id>` for the
+  used/remaining/over-budget view. See [observability.md](observability.md).
 
 ## 6. Trust and opt-in filters (D26/D28/D29)
 
 - Recall is **Strict** by default: only `trusted`/`system` memories are
   eligible.
-- `remember` derives trust from `source_kind`: `tool`, `web`, `import` →
-  `untrusted`; `user`, `agent`, `file` → `trusted`.
+- `remember` derives trust from `source_kind`: `tool`, `web`, `import`, and
+  `file` → `untrusted`; only `user` and `agent` → `trusted`.
 - Opt-ins are per recall call and never relabel a memory:
   `include_untrusted` (fenced data), `include_episodic` (episodic tier is
   opt-in), `include_pending` (below `pending_threshold`).

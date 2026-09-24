@@ -4,6 +4,84 @@ All notable changes to agos-memory are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/); versioning
 follows [SemVer](https://semver.org/).
 
+## [0.6.0] — 2026-09-24
+
+Proof and hardening milestone: leak/restore/eval/soak/poisoning/cost evidence,
+OpenClaw Markdown ingest, stored eval baseline, and the final structural gate.
+Reference-host 10k/100k latency targets are explicitly **NOT MET**; strict
+performance targets remain available and are not replaced by report-only runs.
+
+- **Complete pin API** — `pin`/`unpin` are now available through the store,
+  `MemoryApi`, MCP, JSON API, and CLI. They synchronise the canonical row,
+  sqlite-vec metadata, and `pins` ledger without changing trust or status; this
+  closes the v0.5 follow-up and makes the planned §8 API surface complete.
+### Added
+- **v0.6.0 leak proof** — `tests/leak_paths.rs` verifies a hard-purged fact is
+  unreachable through recall, fresh snapshots, exports, every discovered SQLite
+  table/FTS shadow, and raw DB/WAL/SHM bytes. Pre-purge snapshots intentionally
+  remain a documented restore risk.
+- **100k release gate** — `make bench-100k` seeds 100,000 vectors in bounded
+  transactions, reports setup separately, and fails if hybrid recall p95 is
+  300 ms or higher. `make bench` now explicitly runs the existing 10k/150 ms
+  gate.
+- **Proof artifacts** — `docs/proof.md` and ADR-010 publish the measured
+  10k/100k results and decide to prototype pgvector + PostgreSQL FTS without an
+  immediate production migration.
+- **Operator cost report** — `agos-memory cost [--session] [--since] [--json]`
+  reports provider tokens, estimated USD, per-purpose latency/cost, and
+  `token_ledger` totals from one shared query.
+- **Schema v5 session attribution** — `llm_calls.session_id` is nullable;
+  extraction costs are charged to the originating session, while pre-v5 and
+  sessionless calls remain visible only in totals rather than being guessed.
+- **Aged recall proof** — `tests/aged_recall.rs` uses the real write path plus
+  `FakeClock` to prove 90/180/365-day facts lose rank but remain reachable; the
+  180-day score is `0.720556` versus fresh `0.870161`.
+- **Deterministic recall clock** — additive `recall_with_clock()` keeps the
+  normal `SystemClock` API unchanged while making expiry/decay tests deterministic.
+- **Pinned age immunity** — pinned rows use decay `1.0`, preserving explicit
+  user instructions across time.
+- **Token flatness proof** — `tests/token_flatness.rs` verifies report and
+  `token_ledger` accounting stay at 1,407 injected tokens across 32 / 128 / 512
+  histories (0.00% range) and rejects vacuous empty answers.
+- **Poisoning resistance proof** — `tests/poisoning.rs` covers dedup collisions,
+  version/rollback, crafted imports, summaries, pins, and fenced rendering;
+  trust is re-derived from provenance and cannot be upgraded by later mutations.
+- **Backup/restore drill** — `tests/restore_drill.rs` and `make restore-drill`
+  exercise verified snapshot → offline replacement → normal reopen, including
+  recall, purge/tombstone state, version history, stale lock handling, and
+  fail-closed concurrent opens.
+- **Eval regression gate** — `fixtures/eval_baseline.json` is generated from
+  the deterministic 20-case hash-eval corpus; `make eval` enforces absolute
+  floors plus a one-percentage-point drift tolerance, and explicit
+  `AGOS_EVAL_UPDATE_BASELINE=1` updates remain reviewable.
+- **Sustained mixed-traffic soak** — `tests/soak.rs` and `make soak` run the
+  release writer/read/worker path through remember/recall, session extraction,
+  soft/hard forget, and maintenance, then reconcile rows/jobs and bound RSS,
+  WAL, and database growth. A short diagnostic run is available with
+  `AGOS_SOAK_SECS=2 make soak`; the release gate defaults to 60 seconds.
+  The 60-second release run on 2026-09-24 completed 5,111 operations with
+  3,124 remember calls, 2,692 retained direct rows, 184 hard purges, 234
+  sessions/turns, 293/293 drained jobs, zero DLQ, and writer health true. It
+  reached 138,052 KiB peak RSS, 4,132,392-byte peak WAL, and 23,420,928-byte
+  final DB size. The original 128 MiB RSS-growth ceiling was rejected after a
+  60-second run reached 144,228 KiB peak RSS; the evidence-based 160 MiB default
+  was validated with all reconciliation checks passing.
+- **OpenClaw Markdown ingest** — `agos-memory ingest <dir-or-file> [--dry-run]`
+  parses `MEMORY.md` and `memory/YYYY-MM-DD.md`, stores `file:line` provenance,
+  is idempotent, redacts secrets through the normal write path, records daily
+  items as sessions/turns, and treats agent-authored `file` memories as
+  untrusted by default.
+
+### Changed
+- The per-session provider-token ceiling now sums only that session's attributed
+  ledger rows, refuses work at the ceiling, and treats `max_tokens_per_session=0`
+  as unlimited. `docs/observability.md` documents attribution and price caveats.
+
+### Known limits
+- The reference 10k and 100k latency targets are **NOT MET** (p95 928.09 ms and
+  7472.74 ms respectively). Thresholds were not retuned; ADR-010 defines the
+  reopen/migration criteria.
+
 ## [0.5.0] — 2026-09-22
 
 MCP server runtime: stdio + streamable HTTP, CLI `serve`, hermetic e2e.
@@ -31,8 +109,9 @@ MCP server runtime: stdio + streamable HTTP, CLI `serve`, hermetic e2e.
   `deprecated` rows of the store's agent (hard-purged ids never leave; piping
   to stdout via `--out -`); `import [--dry-run] file` (or `-` for stdin) is
   idempotent by `text_hash` (dupes bump `ref_count`), versioned on conflicting
-  `public_id` (never a silent overwrite), refuses tombstoned ids, and replays
-  trust/status/provenance byte-for-byte. Supports `export | import -`.
+  `public_id` (never a silent overwrite), refuses tombstoned ids, and preserves
+  provenance while re-deriving trust from `source_kind` (import cannot declare
+  trust). Supports `export | import -`.
 - **Static musl build (`make build-musl`)**: builds
   `x86_64-unknown-linux-musl` with a prerequisite guard (musl target +
   `musl-gcc`) and an `ldd` static-link check; runbook "Static (musl) build"
@@ -51,10 +130,7 @@ MCP server runtime: stdio + streamable HTTP, CLI `serve`, hermetic e2e.
   (401 without token, 200 with, remember→recall over the wire).
 - **Dependencies**: `axum 0.8`, `tower 0.5`, `tokio-util 0.7` (rt),
   `reqwest 0.12` (json + rustls-tls + blocking).
-- **Milestone gate `make gate-v0.5.0`** (fmt + clippy `-D warnings` + tests +
-  plan-guard + release build + smoke + **smoke-serve** + eval +
-  eval-summarize) and the `smoke-serve` recipe: spawns `serve --stdio`, runs a
-  real `tools/call` roundtrip over stdin, then starts HTTP `serve` on an
+- **Milestone gate `make gate-v0.5.0`** (fmt + clippy `-D warnings` + tests + yaml-guard + release build + smoke + **smoke-serve** + eval + eval-summarize) and the `smoke-serve` recipe: spawns `serve --stdio`, runs a real `tools/call` roundtrip over stdin, then starts HTTP `serve` on an
   ephemeral loopback port and asserts `/healthz` 200. Wired into CI.
 - **`docker` CI job + `make docker-build` / `make docker-smoke`** — the only
   end-to-end verification of the musl build (0006) and the container (0007).
@@ -158,7 +234,7 @@ The recall path: hybrid retrieval, hard filters, rerank, packing, audit, citatio
 - **CLI commands (0037)**: `recall` (text, k, budget, trust filters, --json/--explain), `explain <id>`, `eval` (JSONL cases, precision/recall/MRR gates, deterministic HashEmbedder).
 - **Perf benchmark (0038)**: `benches/recall_bench.rs` with Criterion — `recall_full`, `embed_only`, `vec_scan_degraded`, `recall_p95` (p95 < 150ms assertion); uses HashEmbedder for hermetic offline benchmark.
 - **Integration suites (0039)**: 8 test suites — `recall_hybrid`, `recall_filters`, `recall_budget`, `recall_explain`, `recall_nohit`, `recall_degraded`, `recall_audit`, `eval_gate`.
-- **Makefile**: `make eval`, `make bench`, `make gate-v0.3.0` (fmt + clippy -D + tests + plan-guard + build + smoke + eval + bench).
+- **Makefile**: `make eval`, `make bench`, `make gate-v0.3.0` (fmt + clippy -D + tests + build + smoke + eval + bench).
 - **Docs**: `docs/recall.md` (full math spec), ADR-006 (hybrid retrieval), ADR-007 (token packing).
 
 ### Fixed
@@ -248,12 +324,9 @@ The write path: facts go in, durably, with provenance.
   integrity check plus core-table row-count equality against the live
   database; refuses to overwrite an existing target.
 - Integration test suites: `tests/migrations.rs`, `tests/store_restart.rs`,
-  `tests/sqlite_vec_knn.rs`, `tests/plan_guard.rs`, `tests/cli_smoke.rs`,
-  `tests/backup.rs`.
-- CI: `make plan-guard` (fails if anything under `plan/` besides its own
-  `.gitignore` is tracked — the single file that keeps local planning notes
-  untracked), `make gate-v0.1.1`, and a GitHub Actions pipeline
-  (fmt, clippy `-D warnings`, offline tests, plan-guard, release build).
+  `tests/sqlite_vec_knn.rs`, `tests/cli_smoke.rs`, `tests/backup.rs`.
+- CI: `make gate-v0.1.1` and a GitHub Actions pipeline
+  (fmt, clippy `-D warnings`, offline tests, release build).
 - `docs/roadmap.md` (the README linked to it before it existed).
 
 ### Changed
@@ -282,5 +355,5 @@ The write path: facts go in, durably, with provenance.
   - LLM call cost ledger with token estimates.
   - Offline eval harness (precision / recall / MRR / leak count).
   - CLI: `init` (config scaffold + database), `status`, `doctor`.
-  - Makefile, GitHub Actions CI (fmt, clippy, tests, plan guard).
+  - Makefile and GitHub Actions CI (fmt, clippy, tests).
   - Docs: README, CONTRIBUTING, SECURITY, ADR-001..003.

@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use crate::error::{Error, Result};
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// Ordered migration list. Index i-1 upgrades to version i.
 pub const MIGRATIONS: &[&str] = &[
@@ -284,6 +284,13 @@ pub const MIGRATIONS: &[&str] = &[
     BEGIN
         SELECT RAISE(ABORT, 'forget_audit is immutable (append-only)');
     END;
+    "#,
+    // v5 — optional session attribution for provider cost reports. Existing
+    // rows remain NULL and are reported only in all-time/sessionless totals.
+    r#"
+    ALTER TABLE llm_calls ADD COLUMN session_id INTEGER REFERENCES sessions(id);
+    CREATE INDEX IF NOT EXISTS idx_llm_calls_session
+        ON llm_calls(session_id, created_at);
     "#,
 ];
 

@@ -68,6 +68,10 @@ model = "{}"
 # Non-loopback binds REQUIRE a token and refuse to start without one.
 bind = "{}"
 # token = "change-me-to-a-long-random-value"
+
+# Provider-token ceiling for one attributed conversation session (0 = unlimited).
+[budget]
+max_tokens_per_session = {}
 "#,
         cfg.db_path.display(),
         cfg.agent_id,
@@ -76,5 +80,6 @@ bind = "{}"
         cfg.llm.base_url,
         cfg.llm.model,
         cfg.server.bind,
+        cfg.budget.max_tokens_per_session,
     )
 }
