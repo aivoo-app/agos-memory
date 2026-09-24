@@ -2,10 +2,11 @@
 
 agos-memory is a self-hosted agent memory manager. One SQLite database per
 agent, reached through MCP (stdio + Streamable HTTP) or the JSON API — shipped
-in v0.5.0. v0.6.0 closes the proof/hardening milestone with cost, leak,
-restore, eval, poisoning, soak, and OpenClaw ingest evidence. This document
-describes the foundation (v0.1.0), the committed shape of what follows, and
-how the interface layer (v0.5.0) sits on top.
+in v0.5.0. v1.0.0 is the launchable release built on the v0.6.0
+proof/hardening milestone with cost, leak, restore, eval, poisoning, soak, and
+OpenClaw ingest evidence. This document describes the foundation (v0.1.0), the
+committed shape of what follows, and how the interface layer (v0.5.0) sits on
+top.
 
 ## Milestones
 
@@ -17,6 +18,7 @@ how the interface layer (v0.5.0) sits on top.
 | v0.4.0  | Consolidation & forgetting: summaries, versioning, verified deletion |
 | v0.5.0  | Interfaces: MCP (stdio + Streamable HTTP), JSON API, integrations |
 | v0.6.0 | **shipped** — load tests, cost report, leak tests, backups, eval, poisoning, soak, OpenClaw ingest; all §10 evidence published; reference-host 10k/100k latency targets **NOT MET** |
+| v1.0.0 | **launchable** — release metadata and master-only CI |
 
 ## Module map
 

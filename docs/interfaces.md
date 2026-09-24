@@ -1,6 +1,6 @@
 # Interfaces — transports, tools, routes, auth, errors
 
-The complete agos-memory v0.6.0 interface reference describes what clients
+The complete agos-memory v1.0.0 interface reference describes what clients
 can call and how failures are reported on each surface. Three normative/verified
 companions live alongside this page:
 

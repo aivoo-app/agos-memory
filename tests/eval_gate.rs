@@ -90,7 +90,7 @@ async fn eval_is_deterministic() -> Result<()> {
 #[test]
 fn baseline_drift_reports_baseline_and_measured() {
     let baseline = EvalBaseline::new(
-        "v0.6.0",
+        "v1.0.0",
         "abc123",
         agos_memory::eval::Metrics {
             precision: 0.95,
@@ -133,7 +133,7 @@ fn baseline_update_is_explicit_and_roundtrips() -> Result<()> {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("baseline.json");
     let baseline = EvalBaseline::new(
-        "v0.6.0",
+        "v1.0.0",
         "abc123",
         agos_memory::eval::Metrics {
             precision: 0.95,

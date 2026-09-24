@@ -4,10 +4,11 @@ Self-hosted agent memory manager: durable, tiered, citation-backed memory for
 AI agents. One SQLite database per agent; MCP + HTTP interfaces; OpenAI-
 compatible embeddings and LLMs via [agos-proxy].
 
-Status: **v0.6.0 — Proof & hardening shipped** (interfaces from v0.5.0 plus leak,
-restore, cost, poisoning, eval, soak, and OpenClaw ingest hardening). The release
-publishes measured evidence for all §10 claims; the reference-host latency
-targets remain explicitly **NOT MET** and are not presented as passing.
+Status: **v1.0.0 — launchable** (interfaces from v0.5.0 plus the v0.6.0
+proof/hardening milestone with leak, restore, cost, poisoning, eval, soak, and
+OpenClaw ingest hardening). The release publishes measured evidence for all §10
+claims; the reference-host latency targets remain explicitly **NOT MET** and
+are not presented as passing.
 
 ## Why
 

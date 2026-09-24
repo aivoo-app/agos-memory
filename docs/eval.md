@@ -39,7 +39,7 @@ AGOS_EVAL_UPDATE_BASELINE=1 make eval
 
 The update is written only after the absolute floors pass. It records:
 
-- the release label (`v0.6.0` via the Makefile);
+- the release label (`v1.0.0` via the Makefile);
 - the short git commit supplied by the Makefile;
 - the corpus size;
 - the `0.01` tolerance; and

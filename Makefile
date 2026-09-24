@@ -20,20 +20,20 @@
 #   make gate-v0.1.1   # v0.1.1 milestone gate: fmt check + clippy + tests
 #   make gate-v0.2.0   # v0.2.0 milestone gate: check + release build + CLI smoke
 #   make gate-v0.5.0   # v0.5.0 Interfaces gate: check + yaml-guard + release + smoke + smoke-serve + eval + eval-summarize
-#   make gate-v0.6.0   # v0.6.0 proof gate: structural checks + report-only 10k/100k measurements + soak
+#   make gate-v1.0.0   # v1.0.0 launch gate: structural checks + report-only 10k/100k measurements + soak
 #   make soak          # release mixed-traffic soak; AGOS_SOAK_SECS controls duration
 #   make smoke-serve   # spawn serve: stdio tools/call roundtrip + HTTP /healthz
 #   make docker-build  # build the container image (also proves the musl build)
 #   make docker-smoke  # run the image: /healthz 200 + auth matrix (mirrors CI)
 #   make yaml-guard    # fail if a workflow is invalid YAML (silently disables CI)
 #   make ci            # check (what CI runs)
-# v0.6.0 release proof is split into strict performance targets and a structural
+# v1.0.0 launch proof is split into strict performance targets and a structural
 # report-only closeout. The strict targets remain the source of truth for a
 # pass/fail latency claim.
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-.PHONY: help check fmt lint test test-fast build build-musl bench bench-report bench-100k bench-100k-report bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 gate-v0.5.0 gate-v0.6.0 yaml-guard ci smoke smoke-serve restore-drill soak docker-build docker-smoke
+.PHONY: help check fmt lint test test-fast build build-musl bench bench-report bench-100k bench-100k-report bench-consolidate eval eval-summarize gate-v0.1.0 gate-v0.1.1 gate-v0.2.0 gate-v0.3.0 gate-v0.4.0 gate-v0.5.0 gate-v0.6.0 gate-v1.0.0 yaml-guard ci smoke smoke-serve restore-drill soak docker-build docker-smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -184,7 +184,7 @@ eval: ## Offline eval gate: absolute floors + committed baseline drift check (on
 	COMMIT=$$(git rev-parse --short HEAD); \
 	trap 'rm -rf $$DIR' EXIT; \
 	printf "db_path = '%s'\nagent_id = 'eval'\n\n[embed]\nprovider = 'hash'\n" "$$DB" > $$DIR/agos-memory.toml; \
-	AGOS_EVAL_RELEASE=v0.6.0 AGOS_EVAL_GIT_COMMIT=$$COMMIT \
+	AGOS_EVAL_RELEASE=v1.0.0 AGOS_EVAL_GIT_COMMIT=$$COMMIT \
 	cargo run --quiet -- --config $$DIR/agos-memory.toml --db $$DB eval \
 		--file fixtures/eval_cases.jsonl \
 		--baseline $$BASELINE \
@@ -239,7 +239,7 @@ gate-v0.5.0: ## v0.5.0 Interfaces gate: fmt + clippy -D + tests + yaml-guard + r
 	$(MAKE) eval-summarize
 	@echo "gate-v0.5.0: OK — perf benches are separate release gates (make bench / make bench-consolidate)"
 
-gate-v0.6.0: ## v0.6.0 proof gate: structural checks + measured performance reports + soak
+gate-v1.0.0: ## v1.0.0 launch gate: structural checks + measured performance reports + soak
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test --all-targets
@@ -252,6 +252,10 @@ gate-v0.6.0: ## v0.6.0 proof gate: structural checks + measured performance repo
 	$(MAKE) bench-report
 	$(MAKE) bench-100k-report
 	$(MAKE) soak
-	@echo "gate-v0.6.0: structural gate OK; strict performance thresholds remain make bench / make bench-100k and are NOT MET on the published reference host"
+	@echo "gate-v1.0.0: structural gate OK; strict performance thresholds remain make bench / make bench-100k and are NOT MET on the published reference host"
+
+# Backward-compatible name for the previous proof milestone.
+gate-v0.6.0: gate-v1.0.0 ## Compatibility alias for the v0.6.0 proof gate
+	@:
 
 ci: check ## CI pipeline (offline; no provider access needed)

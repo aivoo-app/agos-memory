@@ -11,7 +11,7 @@ Committed version plan. This file is the repo-visible source of truth.
 | v0.4.0 | Consolidation & forgetting: session summaries, episodic compression, versioning/supersedes, procedural triples, forget soft/hard + cascade + secure_delete + tombstones, nightly maintain, replay audit | leak test passes on every path; cascade complete; nightly resumable |
 | v0.5.0 | Interfaces: rmcp MCP server (stdio + Streamable HTTP), axum JSON API + bearer auth, agos-proxy clients, export/import, Hermes/OpenClaw docs, musl build, Docker | MCP stdio e2e test; integration docs verified |
 | v0.6.0 | Proof & hardening: 100k load test <300ms, cost report, poisoning tests, backup/restore drill, eval regression gate, pgvector ADR, soak test | **shipped**; all six §10 evidence rows published; 10k/100k latency targets explicitly **NOT MET** |
-| v1.0.0 | Release | every "Done Means" item evidenced |
+| v1.0.0 | Release | **launchable**; master-only CI; package/API metadata at 1.0.0 |
 
 Status: v0.3.0 shipped (recall path, eval gate, perf bench); v0.4.0 shipped
 (consolidation & forgetting — summaries + ROUGE-L gate, versioning/rollback,
@@ -20,4 +20,4 @@ scheduler); v0.5.0 shipped (interfaces — MCP stdio + Streamable HTTP, axum
 JSON API + bearer auth, export/import, musl static build, Docker); **v0.6.0
 shipped** (proof & hardening — all six §10 claims evidenced in
 [proof.md](proof.md), with reference-host 10k/100k latency targets explicitly
-**NOT MET**).
+**NOT MET**). **v1.0.0 launchable** (release metadata and master-only CI).

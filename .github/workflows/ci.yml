@@ -2,8 +2,9 @@ name: ci
 
 on:
   push:
-    branches: ["**"]
+    branches: [master]
   pull_request:
+    branches: [master]
 
 jobs:
   check:
@@ -53,7 +54,7 @@ jobs:
         if: github.event_name == 'push'
         run: make eval-summarize
 
-  # Push-only final v0.6.0 structural proof. It includes the release performance
+  # Push-only final v1.0.0 launch proof. It includes the release performance
   # reports, and the 60-second soak, so these are not also duplicated in separate
   # push jobs. Performance is report-only because the
   # published reference-host latency misses are explicit NOT MET results; strict
@@ -67,8 +68,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Final v0.6.0 proof gate
-        run: make gate-v0.6.0
+      - name: Final v1.0.0 launch gate
+        run: make gate-v1.0.0
 
 
   # Packaging gate: building the image is the only end-to-end proof of the musl

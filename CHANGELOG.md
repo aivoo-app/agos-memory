@@ -4,6 +4,20 @@ All notable changes to agos-memory are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/); versioning
 follows [SemVer](https://semver.org/).
 
+## [1.0.0] — 2026-09-25
+
+Launchable release built on the v0.5.0 interfaces and v0.6.0 proof/hardening
+milestone. The release keeps the published v0.6.0 performance findings explicit:
+the reference-host 10k/100k latency targets remain **NOT MET**.
+
+### Changed
+- Package, lockfile, OpenAPI, eval baseline, and release-gate metadata now
+  identify version `1.0.0`.
+- GitHub Actions CI is restricted to pushes to `master` and pull requests
+  targeting `master`.
+- The v1.0.0 launch gate preserves the existing structural, smoke, eval, soak,
+  and report-only performance checks.
+
 ## [0.6.0] — 2026-09-24
 
 Proof and hardening milestone: leak/restore/eval/soak/poisoning/cost evidence,
